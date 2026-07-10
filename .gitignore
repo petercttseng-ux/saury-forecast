@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 日誌
+*.log
+
+# JMA 原始資料（大型、由系統自動下載，不納入版控）
+data/himsst/*.txt
+data/nprsubt/*.txt
+data/nprsubc/*.txt
+
+# 大型示範圖／測試圖
+demo_*.png
+test_*.png
+HIMSST*.png
+*_view.png
+*_bg.png
+
+# 系統/編輯器
+.claude/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

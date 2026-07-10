@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>西北太平洋秋刀魚漁場速預報系統</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<header class="site-header">
+  <div class="header-inner">
+    <div class="header-brand">
+      <img src="./static/images/fri_logo.jpg" alt="水產試驗所" class="logo-img" onerror="this.style.display='none'" />
+      <div class="brand-text">
+        <span class="brand-org">農業部水產試驗所 · 漁海況研究小組</span>
+        <span class="brand-title">西北太平洋秋刀魚漁場速預報系統</span>
+      </div>
+    </div>
+    <div class="header-meta">
+      <span class="meta-badge" style="background:rgba(255,255,255,.16);padding:5px 10px;border-radius:8px;font-size:12px">靜態版 · GitHub Pages</span>
+      <span id="current-time" class="meta-time">—</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <section class="panel panel-hero">
+      <button id="btn-forecast" class="btn-forecast" onclick="runForecast()">
+        <span class="fc-icon">🎯</span><span class="fc-text">一鍵秋刀魚漁場速預報</span>
+      </button>
+      <div class="fc-hint">自動分析所選日期 · 標示高機率漁場熱區</div>
+    </section>
+
+    <section class="panel">
+      <h3 class="panel-title"><span class="icon">📅</span> 資料日期</h3>
+      <select id="date-select" class="form-select" onchange="onDateChange()"></select>
+    </section>
+
+    <section class="panel">
+      <h3 class="panel-title"><span class="icon">🗺️</span> 疊加圖層</h3>
+
+      <label class="layer-row">
+        <input type="checkbox" class="layer-chk" data-layer="sst" onchange="toggleLayer('sst', this.checked)" checked />
+        <span class="layer-name">海面水溫 SST</span>
+      </label>
+      <div class="sub-opt show" id="opt-sst">
+        <label class="iso-row"><input type="checkbox" id="sst-iso" onchange="toggleIso('sst', this.checked)" /><span>顯示等溫線</span></label>
+        <label class="mini-label">等溫線間距 (°C)</label>
+        <select id="sst-iso-int" class="form-select form-select-sm" onchange="reloadIso('sst')">
+          <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option>
+        </select>
+      </div>
+
+      <label class="layer-row">
+        <input type="checkbox" class="layer-chk" data-layer="subtemp" onchange="toggleLayer('subtemp', this.checked)" />
+        <span class="layer-name">次表層水溫</span>
+      </label>
+      <div class="sub-opt" id="opt-subtemp">
+        <label class="mini-label">深度</label>
+        <select id="sub-depth" class="form-select form-select-sm" onchange="onSubDepthChange()">
+          <option value="50m">50 m</option><option value="100m" selected>100 m</option><option value="200m">200 m</option><option value="400m">400 m</option>
+        </select>
+        <label class="iso-row" style="margin-top:8px"><input type="checkbox" id="subtemp-iso" onchange="toggleIso('subtemp', this.checked)" /><span>顯示等溫線</span></label>
+        <label class="mini-label">等溫線間距 (°C)</label>
+        <select id="subtemp-iso-int" class="form-select form-select-sm" onchange="reloadIso('subtemp')">
+          <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="5">5</option>
+        </select>
+      </div>
+
+      <label class="layer-row">
+        <input type="checkbox" class="layer-chk" data-layer="currents" onchange="toggleLayer('currents', this.checked)" />
+        <span class="layer-name">表面海流</span>
+      </label>
+      <div class="sub-opt" id="opt-currents">
+        <label class="mini-label">箭頭大小 <span id="cur-size-val">1.0</span>×</label>
+        <input type="range" id="cur-size" min="0.5" max="2" step="0.1" value="1.0"
+               oninput="document.getElementById('cur-size-val').textContent=(+this.value).toFixed(1)" onchange="reloadLayer('currents')" />
+        <label class="mini-label" style="margin-top:8px">空間解析度（箭頭密度）</label>
+        <select id="cur-skip" class="form-select form-select-sm" onchange="reloadLayer('currents')">
+          <option value="4">疏</option><option value="3" selected>中</option><option value="2">密</option><option value="1">很密</option>
+        </select>
+      </div>
+
+      <label class="layer-row">
+        <input type="checkbox" class="layer-chk" data-layer="habitat" onchange="toggleLayer('habitat', this.checked)" />
+        <span class="layer-name">棲息機率預測</span>
+      </label>
+
+      <label class="layer-row">
+        <input type="checkbox" class="layer-chk" data-layer="fronts" onchange="toggleLayer('fronts', this.checked)" />
+        <span class="layer-name">溫度鋒面偵測</span>
+      </label>
+      <div class="sub-opt" id="opt-fronts">
+        <label class="mini-label">鋒面門檻 <span id="front-th-val">0.05</span> °C/km</label>
+        <input type="range" id="front-th" min="0.02" max="0.15" step="0.01" value="0.05"
+               oninput="document.getElementById('front-th-val').textContent=this.value" onchange="reloadLayer('fronts')" />
+      </div>
+
+      <label class="layer-row">
+        <input type="checkbox" class="layer-chk" data-layer="hotspots" onchange="toggleLayer('hotspots', this.checked)" />
+        <span class="layer-name">漁場熱區標記</span>
+      </label>
+
+      <div class="opacity-row">
+        <label class="mini-label">疊圖透明度</label>
+        <input type="range" id="opacity" min="0.2" max="1" step="0.05" value="0.82" oninput="setOpacity(this.value)" />
+      </div>
+    </section>
+
+    <section class="panel" id="hotspot-panel" style="display:none">
+      <h3 class="panel-title"><span class="icon">📍</span> 推薦漁場熱區</h3>
+      <div id="hotspot-list" class="hotspot-list"></div>
+      <button class="btn-report" onclick="downloadReport()">⬇ 下載速預報報告 (HTML)</button>
+    </section>
+
+    <section class="panel panel-ecdf">
+      <h3 class="panel-title"><span class="icon">📊</span> ECDF 最適環境</h3>
+      <div id="ecdf-content" class="ecdf-loading">載入中…</div>
+    </section>
+  </aside>
+
+  <main class="main-content">
+    <div class="status-bar">
+      <span id="status-text" class="status-idle">拖曳地圖平移 · 滾輪縮放 · 移動滑鼠即時顯示水溫</span>
+      <div id="live-value" class="live-value"></div>
+    </div>
+    <div id="map"></div>
+    <div id="legend-box" class="legend-box"></div>
+    <div id="overlay-mask" class="overlay-mask hidden">
+      <div class="spinner-ring"></div>
+      <p id="mask-text">分析中，請稍候…</p>
+    </div>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <span>© 農業部水產試驗所 漁海況研究小組</span>
+  <span class="footer-sep">|</span>
+  <span>資料來源：日本氣象廳 JMA GOOS</span>
+  <span class="footer-sep">|</span>
+  <span>範圍 17°N–56°N, 114°E–162°E</span>
+  <span class="footer-sep">|</span>
+  <span>v4.0 靜態前端</span>
+</footer>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-contour@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-geo@3"></script>
+<script src="./app.js"></script>
+</body>
+</html>

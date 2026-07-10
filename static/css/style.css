@@ -1,0 +1,101 @@
+/* ==========================================================================
+   秋刀魚漁場速預報系統 - Leaflet 版樣式
+   農業部水產試驗所 漁海況研究小組
+   ========================================================================== */
+:root {
+  --navy: #0d2a4a; --navy-2: #14395f; --ocean: #1b6ca8; --ocean-lt: #2e8bc0;
+  --accent: #f4a259; --accent-2: #e07a1f; --bg: #f0f4f8; --panel: #ffffff;
+  --line: #d9e2ec; --text: #22303f; --text-lt: #5b6b7c; --good: #1a8a3a;
+  --shadow: 0 2px 10px rgba(13, 42, 74, .10);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Noto Sans TC', system-ui, sans-serif; background: var(--bg);
+  color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+}
+/* HEADER */
+.site-header { background: linear-gradient(120deg, var(--navy), var(--ocean)); color: #fff; box-shadow: var(--shadow); z-index: 1200; flex: 0 0 auto; }
+.header-inner { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; }
+.header-brand { display: flex; align-items: center; gap: 14px; }
+.logo-img { height: 46px; width: auto; border-radius: 6px; background: #fff; padding: 3px; }
+.brand-text { display: flex; flex-direction: column; }
+.brand-org { font-size: 12px; opacity: .85; letter-spacing: .5px; }
+.brand-title { font-size: 20px; font-weight: 700; letter-spacing: .5px; }
+.header-meta { display: flex; align-items: center; gap: 14px; }
+.meta-time { font-size: 13px; opacity: .9; font-variant-numeric: tabular-nums; }
+.btn-update { background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.35); padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; transition: .18s; }
+.btn-update:hover { background: rgba(255,255,255,.28); }
+.btn-update:disabled { opacity: .6; cursor: progress; }
+/* LAYOUT */
+.layout { flex: 1 1 auto; display: flex; min-height: 0; }
+.sidebar { width: 320px; flex: 0 0 320px; background: var(--bg); padding: 14px; overflow-y: auto; border-right: 1px solid var(--line); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 12px; box-shadow: var(--shadow); }
+.panel-title { font-size: 14px; font-weight: 700; color: var(--navy); display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.panel-title .icon { font-size: 15px; }
+/* forecast */
+.panel-hero { background: linear-gradient(135deg, var(--navy), var(--ocean)); border: none; }
+.btn-forecast { width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; border: none; border-radius: 10px; padding: 14px; cursor: pointer; font-size: 16px; font-weight: 700; box-shadow: 0 3px 12px rgba(224,122,31,.4); transition: .18s; }
+.btn-forecast:hover { transform: translateY(-1px); box-shadow: 0 5px 16px rgba(224,122,31,.5); }
+.btn-forecast:active { transform: translateY(0); }
+.fc-icon { font-size: 20px; }
+.fc-hint { color: rgba(255,255,255,.85); font-size: 11.5px; text-align: center; margin-top: 8px; }
+/* forms */
+.form-select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; background: #fff; color: var(--text); cursor: pointer; }
+.form-select-sm { padding: 5px 8px; font-size: 13px; }
+.layer-row { display: flex; align-items: center; gap: 9px; padding: 7px 4px; cursor: pointer; border-radius: 7px; transition: background .15s; }
+.layer-row:hover { background: #f2f7fb; }
+.layer-chk { width: 17px; height: 17px; accent-color: var(--ocean); cursor: pointer; }
+.layer-name { font-size: 14px; }
+.sub-opt { margin: 0 0 8px 26px; padding: 8px 10px; background: #f5f9fc; border-radius: 8px; display: none; }
+.sub-opt.show { display: block; }
+.mini-label { font-size: 12px; color: var(--text-lt); display: block; margin-bottom: 5px; }
+.sub-opt input[type=range], .opacity-row input[type=range] { width: 100%; accent-color: var(--ocean); }
+.opacity-row { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+/* hotspots */
+.hotspot-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.hotspot-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; background: #f5f9fc; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; transition: .15s; }
+.hotspot-item:hover { background: #e8f2fa; border-color: var(--ocean-lt); }
+.hs-rank { flex: 0 0 26px; height: 26px; border-radius: 50%; color: #fff; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center; background: var(--accent-2); }
+.hs-body { flex: 1; min-width: 0; }
+.hs-coord { font-size: 13px; font-weight: 600; color: var(--navy); }
+.hs-meta { font-size: 11.5px; color: var(--text-lt); }
+.btn-report { width: 100%; background: var(--navy-2); color: #fff; border: none; border-radius: 9px; padding: 10px; font-size: 13.5px; font-weight: 500; cursor: pointer; transition: .15s; }
+.btn-report:hover { background: var(--ocean); }
+/* ecdf */
+.panel-ecdf .ecdf-loading { color: var(--text-lt); font-size: 13px; }
+.ecdf-grid { display: flex; flex-direction: column; gap: 8px; }
+.ecdf-row { display: flex; justify-content: space-between; font-size: 13px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+.ecdf-row:last-child { border-bottom: none; }
+.ecdf-k { color: var(--text-lt); }
+.ecdf-v { font-weight: 600; color: var(--navy); }
+/* map */
+.main-content { flex: 1 1 auto; display: flex; flex-direction: column; position: relative; min-width: 0; }
+.status-bar { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 13px; z-index: 600; }
+.status-idle { color: var(--text-lt); }
+.status-busy { color: var(--accent-2); font-weight: 600; }
+.status-ok { color: var(--good); font-weight: 600; }
+.live-value { font-size: 13px; font-weight: 600; color: var(--navy); font-variant-numeric: tabular-nums; }
+#map { flex: 1 1 auto; width: 100%; background: #a9cce3; }
+.legend-box { position: absolute; right: 14px; bottom: 34px; z-index: 700; background: rgba(255,255,255,.94); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; box-shadow: var(--shadow); max-width: 220px; font-size: 12px; display: none; }
+.legend-box.show { display: block; }
+.legend-title { font-weight: 700; color: var(--navy); margin-bottom: 6px; font-size: 12.5px; }
+.legend-bar { height: 12px; border-radius: 3px; margin: 4px 0; }
+.legend-scale { display: flex; justify-content: space-between; color: var(--text-lt); font-size: 11px; }
+.legend-item { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+.legend-sw { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 auto; }
+.legend-block { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.legend-block:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+.hotspot-marker { background: var(--accent-2); color: #fff; border: 2px solid #fff; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+.overlay-mask { position: absolute; inset: 0; z-index: 1000; background: rgba(13,42,74,.55); display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; gap: 16px; }
+.overlay-mask.hidden { display: none; }
+.overlay-mask p { font-size: 15px; font-weight: 500; }
+.spinner-ring { width: 46px; height: 46px; border: 4px solid rgba(255,255,255,.3); border-top-color: var(--accent); border-radius: 50%; animation: spin .9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.site-footer { flex: 0 0 auto; background: var(--navy); color: rgba(255,255,255,.82); font-size: 11.5px; padding: 6px 20px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.footer-sep { opacity: .4; }
+.leaflet-popup-content { font-family: 'Noto Sans TC', sans-serif; font-size: 13px; }
+.hs-popup-title { font-weight: 700; color: var(--navy); margin-bottom: 4px; }
+
+.iso-row { display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:8px; cursor:pointer; }
+.iso-row input { width:16px; height:16px; accent-color: var(--ocean); }
+.iso-label { background: rgba(255,255,255,.85); border:1px solid #555; border-radius:3px; padding:0 3px; font-size:11px; font-weight:700; color:#222; white-space:nowrap; line-height:1.3; }
