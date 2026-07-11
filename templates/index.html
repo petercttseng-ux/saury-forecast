@@ -49,6 +49,7 @@
         <option value="{{ d }}" {% if loop.first %}selected{% endif %}>{{ d }}</option>
         {% endfor %}
       </select>
+      <button id="btn-latest" class="btn-latest" onclick="loadLatest()">⟳ 載入最新資料</button>
     </section>
 
     <!-- 圖層控制 -->

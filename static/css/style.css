@@ -61,6 +61,10 @@ body {
 .hs-meta { font-size: 11.5px; color: var(--text-lt); }
 .btn-report { width: 100%; background: var(--navy-2); color: #fff; border: none; border-radius: 9px; padding: 10px; font-size: 13.5px; font-weight: 500; cursor: pointer; transition: .15s; }
 .btn-report:hover { background: var(--ocean); }
+/* load latest */
+.btn-latest { width: 100%; margin-top: 8px; background: var(--navy-2); color: #fff; border: none; border-radius: 9px; padding: 9px; font-size: 13px; font-weight: 500; cursor: pointer; transition: .15s; }
+.btn-latest:hover { background: var(--ocean); }
+.btn-latest:disabled { opacity: .6; cursor: progress; }
 /* ecdf */
 .panel-ecdf .ecdf-loading { color: var(--text-lt); font-size: 13px; }
 .ecdf-grid { display: flex; flex-direction: column; gap: 8px; }

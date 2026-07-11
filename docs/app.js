@@ -417,6 +417,25 @@ window.onDateChange = async function() {
   ['sst','subtemp'].forEach(w=>{ if(isoLayers[w]) loadIsotherms(w); });
 };
 
+// ── 載入最新資料（重新讀取 manifest 並跳到最新日期）──────
+window.loadLatest = async function () {
+  const btn = document.getElementById('btn-latest');
+  if (btn) btn.disabled = true;
+  setStatus('重新載入資料清單…', 'status-busy');
+  try {
+    const man = await (await fetch(DATA + 'manifest.json?t=' + Date.now())).json();
+    const sel = document.getElementById('date-select');
+    sel.innerHTML = man.dates.map(d => `<option value="${d}">${d}</option>`).join('');
+    if (man.dates.length) {
+      sel.value = man.dates[0];
+      delete gridCache[man.dates[0]];   // 確保重新抓取最新檔
+      await onDateChange();
+      setStatus('已載入最新資料：' + man.dates[0], 'status-ok');
+    } else setStatus('無可用資料', 'status-idle');
+  } catch (e) { setStatus('載入失敗：' + e, 'status-idle'); }
+  if (btn) btn.disabled = false;
+};
+
 // ── 一鍵速預報 ───────────────────────────────────────────
 let lastForecast = null;
 window.runForecast = async function() {

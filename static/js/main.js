@@ -385,6 +385,26 @@ async function refreshDates() {
   onDateChange();
 }
 
+// ── 載入最新資料（重新讀取日期清單並跳到最新日期）────────
+window.loadLatest = async function () {
+  const btn = document.getElementById('btn-latest');
+  if (btn) btn.disabled = true;
+  setStatus('重新載入日期清單…', 'status-busy');
+  try {
+    const r = await fetch('/api/dates');
+    const d = await r.json();
+    const dates = (d.himsst || []).sort().reverse();
+    const sel = document.getElementById('date-select');
+    sel.innerHTML = dates.map(x => `<option value="${x}">${x}</option>`).join('');
+    if (dates.length) {
+      sel.value = dates[0];
+      onDateChange();
+      setStatus('已載入最新資料：' + dates[0], 'status-ok');
+    } else setStatus('無可用資料', 'status-idle');
+  } catch (e) { setStatus('載入失敗：' + e, 'status-idle'); }
+  if (btn) btn.disabled = false;
+};
+
 // ── 工具 ─────────────────────────────────────────────────
 function layerLabel(n) {
   return { sst: '海面水溫', subtemp: '次表層水溫', currents: '表面海流',
