@@ -6,6 +6,9 @@
 
 const V = window.VIEW || { lat_min: 17, lat_max: 56, lon_min: 114, lon_max: 162 };
 
+// 漁場熱區判定門檻（棲息機率 0-1）；2026-08-19 由 0.6 調降為 0.5
+const HOTSPOT_PROB_THR = 0.5;
+
 // ── 地圖初始化 ───────────────────────────────────────────
 const map = L.map('map', {
   center: [(V.lat_min + V.lat_max) / 2, (V.lon_min + V.lon_max) / 2],
@@ -80,7 +83,7 @@ async function loadHotspots() {
   const date = currentDate();
   setStatus('萃取漁場熱區…', 'status-busy');
   try {
-    const r = await fetch(`/api/hotspots?date=${date}&prob=0.6`);
+    const r = await fetch(`/api/hotspots?date=${date}&prob=${HOTSPOT_PROB_THR}`);
     const d = await r.json();
     if (d.error) { setStatus(d.error, 'status-idle'); return; }
     drawHotspots(d.hotspots);

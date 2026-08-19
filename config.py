@@ -133,6 +133,10 @@ ECDF_PERCENTILES = {
     'very_high': 0.90     # 90% - 非常高機率
 }
 
+# 漁場熱區判定門檻（棲息機率 0-1，前後端共用之單一權威設定）
+# 2026-08-19 由 0.6 調降為 0.5，以擴大推薦漁場涵蓋範圍
+HOTSPOT_PROB_THRESHOLD = 0.5
+
 # 顏色對應（用於秋刀魚棲息地分布圖）
 HABITAT_COLORS = {
     'very_high': '#1a5f1a',   # 深綠色 - 非常適合

@@ -168,7 +168,7 @@ def api_fronts():
 def api_hotspots():
     ensure_data_loaded()
     date = request.args.get('date', '') or latest_date()
-    threshold = float(request.args.get('prob', 0.6))
+    threshold = float(request.args.get('prob', config.HOTSPOT_PROB_THRESHOLD))
     hb = compute_habitat(date)
     if hb is None:
         return jsonify({'error': '棲息機率計算失敗'}), 404
@@ -189,11 +189,13 @@ def api_forecast():
     if hb is not None:
         prob, sst, lats, lons = hb
         result['habitat'] = ovr.render_habitat(prob, lats, lons)
-        spots = analysis.extract_hotspots(prob, lats, lons, sst=sst, prob_threshold=0.6)
+        spots = analysis.extract_hotspots(prob, lats, lons, sst=sst,
+                                          prob_threshold=config.HOTSPOT_PROB_THRESHOLD)
         result['hotspots'] = spots
         cell = np.abs(np.gradient(lats))[:, None] * 111.0 * \
                (np.abs(np.gradient(lons))[None, :] * 111.0 * np.cos(np.radians(lats.mean())))
-        high_mask = np.where(np.isnan(prob), False, prob >= 0.6)
+        high_mask = np.where(np.isnan(prob), False,
+                             prob >= config.HOTSPOT_PROB_THRESHOLD)
         result['high_prob_area_km2'] = round(float(cell[high_mask].sum()), 0)
     else:
         result['hotspots'] = []

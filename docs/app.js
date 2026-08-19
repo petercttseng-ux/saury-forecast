@@ -11,6 +11,9 @@ let curData = null;          // 當前日期解碼後的資料
 const gridCache = {};        // date -> 原始 JSON
 let overlayOpacity = 0.82;
 
+// 漁場熱區判定門檻（棲息機率 0-1）；2026-08-19 由 0.6 調降為 0.5
+const HOTSPOT_PROB_THR = 0.5;
+
 // ── Mercator ─────────────────────────────────────────────
 const D2R = Math.PI / 180;
 function lat2merc(lat) { lat = Math.max(-85.05, Math.min(85.05, lat)); return Math.log(Math.tan(Math.PI/4 + lat*D2R/2)); }
@@ -359,7 +362,7 @@ function loadHotspots() {
   const P = curData._prob || computeHabitat();
   if (!P) { setStatus('缺次表層資料，無法萃取熱區','status-idle'); return; }
   curData._prob = P;
-  const spots = extractHotspots(P, 0.6);
+  const spots = extractHotspots(P, HOTSPOT_PROB_THR);
   drawHotspots(spots); renderHotspotList(spots);
   setStatus(`標示 ${spots.length} 個推薦漁場`, 'status-ok');
   return spots;
@@ -446,11 +449,11 @@ window.runForecast = async function() {
     const P = computeHabitat();
     let spots = [];
     if (P) { curData._prob=P; setChk('habitat',true); addImage('habitat', renderHabitat(P, overlayOpacity), overlayOpacity);
-             spots = extractHotspots(P,0.6); setChk('hotspots',true); drawHotspots(spots); renderHotspotList(spots); }
+             spots = extractHotspots(P,HOTSPOT_PROB_THR); setChk('hotspots',true); drawHotspots(spots); renderHotspotList(spots); }
     setChk('fronts',true); document.getElementById('opt-fronts').classList.add('show'); loadFronts();
     let area = 0;
     if (P){ const dlat=Math.abs((P.latN-P.latS)/(P.ny-1))*111, dlon=Math.abs((P.lonE-P.lonW)/(P.nx-1))*111*Math.cos((P.latN+P.latS)/2*D2R), cell=dlat*dlon;
-      for (let i=0;i<P.data.length;i++) if(!isNaN(P.data[i])&&P.data[i]>=0.6) area+=cell; }
+      for (let i=0;i<P.data.length;i++) if(!isNaN(P.data[i])&&P.data[i]>=HOTSPOT_PROB_THR) area+=cell; }
     lastForecast = { date: currentDate(), spots, area: Math.round(area), ecdf: ECDF.summary };
     setStatus(`✓ ${currentDate()} 速預報完成：${spots.length} 個推薦漁場 · 高機率海域 ${Math.round(area).toLocaleString()} km²`, 'status-ok');
   } catch(e){ setStatus('速預報失敗：'+e,'status-idle'); console.error(e); }
