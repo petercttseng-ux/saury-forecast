@@ -11,8 +11,8 @@ let curData = null;          // 當前日期解碼後的資料
 const gridCache = {};        // date -> 原始 JSON
 let overlayOpacity = 0.82;
 
-// 漁場熱區判定門檻（棲息機率 0-1）；2026-08-19 由 0.6 調降為 0.5
-const HOTSPOT_PROB_THR = 0.5;
+// 漁場熱區判定門檻（棲息機率 0-1）；2026-08-19 由 0.6 調降為 0.5，2026-08-20 再調降為 0.4
+const HOTSPOT_PROB_THR = 0.4;
 
 // ── Mercator ─────────────────────────────────────────────
 const D2R = Math.PI / 180;

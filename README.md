@@ -47,7 +47,7 @@ python app.py
 | `GET /api/overlay/<sst\|subtemp\|currents\|habitat>` | 各圖層透明疊圖；海流可帶 `arrow_size`／`skip` |
 | `GET /api/fronts` | 溫度鋒面 GeoJSON（`threshold` 可調） |
 | `GET /api/isotherms` | 等溫線 GeoJSON 與標註（`layer`／`interval`／`depth` 可調） |
-| `GET /api/hotspots` | 漁場熱區清單（`prob` 門檻可調，預設 0.5） |
+| `GET /api/hotspots` | 漁場熱區清單（`prob` 門檻可調，預設 0.4） |
 | `GET /api/forecast` | 一鍵速預報 |
 | `GET /api/value` | 指定經緯度的即時數值 |
 | `POST /api/update-data` · `GET /api/update-status` | 背景更新 JMA 資料與進度 |
@@ -79,7 +79,7 @@ python app.py
 
 以 `Saury-csv.txt` 歷史秋刀魚 CPUE 資料，對 SST 與 100m 水溫建立經驗累積分布函數（ECDF），取核心範圍（25–75 百分位）為最適區間，結合當日海況計算每個網格點的聯合棲息機率（0–1），再萃取高機率連通海域作為推薦漁場。
 
-> **熱區門檻**：推薦漁場熱區與「高機率海域面積」統計均以棲息機率 **≥ 0.5** 判定（2026-08-19 由 0.6 調降），並保留最小面積 1,500 km² 之過濾條件。後端設定於 `config.HOTSPOT_PROB_THRESHOLD`，靜態版設定於 `docs/app.js` 的 `HOTSPOT_PROB_THR`。
+> **熱區門檻**：推薦漁場熱區與「高機率海域面積」統計均以棲息機率 **≥ 0.4** 判定（2026-08-19 由 0.6 調降為 0.5，2026-08-20 再調降為 0.4），並保留最小面積 1,500 km² 之過濾條件。後端設定於 `config.HOTSPOT_PROB_THRESHOLD`，靜態版設定於 `docs/app.js` 的 `HOTSPOT_PROB_THR`。
 
 > 次表層水溫／海流資料通常較 SST 落後約 1 日，系統會自動採用最接近可用日期之資料。
 

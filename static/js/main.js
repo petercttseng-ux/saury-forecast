@@ -6,8 +6,8 @@
 
 const V = window.VIEW || { lat_min: 17, lat_max: 56, lon_min: 114, lon_max: 162 };
 
-// 漁場熱區判定門檻（棲息機率 0-1）；2026-08-19 由 0.6 調降為 0.5
-const HOTSPOT_PROB_THR = 0.5;
+// 漁場熱區判定門檻（棲息機率 0-1）；2026-08-19 由 0.6 調降為 0.5，2026-08-20 再調降為 0.4
+const HOTSPOT_PROB_THR = 0.4;
 
 // ── 地圖初始化 ───────────────────────────────────────────
 const map = L.map('map', {
