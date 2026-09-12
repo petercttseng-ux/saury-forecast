@@ -91,17 +91,17 @@ def detect_fronts(sst, lats, lons, threshold=0.05, lat_min=None, lat_max=None,
 # ──────────────────────────────────────────────────────────────
 #  漁場熱區萃取
 # ──────────────────────────────────────────────────────────────
-def extract_hotspots(prob, lats, lons, sst=None, prob_threshold=0.4,
+def extract_hotspots(prob, lats, lons, sst=None, prob_threshold=0.5,
                      min_area_km2=1500, max_spots=12):
     """
-    從棲息機率網格萃取高機率連通熱區。
+    從相對棲地適合度網格萃取推薦漁場連通熱區。
 
     Args:
-        prob           : 棲息機率網格 (0-1)，與 lats/lons 對齊
+        prob           : 相對棲地適合度 HSI 網格 (0-1)，與 lats/lons 對齊
         sst            : （可選）同網格 SST，用於計算熱區平均水溫
-        prob_threshold : 熱區判定門檻（預設 0.4）
+        prob_threshold : 熱區判定門檻（預設 0.5，採嚴格大於）
         min_area_km2   : 最小面積（過濾雜點）
-        max_spots      : 最多回傳幾個熱區（依機率×面積排序）
+        max_spots      : 最多回傳幾個熱區（依 HSI×面積排序）
     Returns:
         list[dict]，每個熱區含 center/area/mean_prob/mean_sst/rank/polygon
     """
@@ -111,7 +111,7 @@ def extract_hotspots(prob, lats, lons, sst=None, prob_threshold=0.4,
     lats = np.asarray(lats, dtype=float)
     lons = np.asarray(lons, dtype=float)
 
-    mask = np.where(np.isnan(prob), False, prob >= prob_threshold)
+    mask = np.where(np.isnan(prob), False, prob > prob_threshold)
     if not mask.any():
         return []
 

@@ -69,7 +69,7 @@ def main():
 
     def nearest_key(idx, d):
         ks = sorted(idx.keys()); le = [k for k in ks if k <= d]
-        return le[-1] if le else (ks[0] if ks else None)
+        return le[-1] if le else None
 
     manifest = {'dates': [],
                 'view': {'latN': LATN, 'latS': LATS, 'lonW': LONW, 'lonE': LONE},
@@ -95,20 +95,12 @@ def main():
 
     an = SauryECDFAnalyzer()
     if an.load_data():
-        an.analyze_sst(); an.analyze_100m_temp()
+        an.analyze_all()
 
-        def pack(res, n=160):
-            sv = res['sorted_values']; cdf = res['cdf']
-            idx = np.linspace(0, len(sv) - 1, min(n, len(sv))).astype(int)
-            return {'v': [round(float(x), 3) for x in sv[idx]],
-                    'cdf': [round(float(x), 4) for x in cdf[idx]],
-                    'min': round(float(res['min']), 2), 'max': round(float(res['max']), 2),
-                    'mean': round(float(res['mean']), 2),
-                    'p25': round(float(res['percentiles']['low']), 2),
-                    'p75': round(float(res['percentiles']['high']), 2)}
-
-        ecdf = {'sst': pack(an.ecdf_results['sst']),
-                'temp100': pack(an.ecdf_results['100m_temp']),
+        curves = an.get_curve_data()
+        ecdf = {'sst': curves['sst'],
+                'temp100': curves['100m_temp'],
+                'parameters': curves,
                 'summary': an.get_summary()}
         json.dump(ecdf, open(os.path.join(OUT_DIR, 'ecdf.json'), 'w'), separators=(',', ':'))
         print('  ecdf.json done')

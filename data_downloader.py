@@ -327,13 +327,20 @@ class JMADataDownloader:
 
 
 if __name__ == "__main__":
-    # 測試下載功能
+    import argparse
+
+    parser = argparse.ArgumentParser(description='下載最新 JMA 秋刀魚漁海況資料')
+    parser.add_argument('--count', type=int, default=3,
+                        help='各產品下載的最新日數（預設 3）')
+    args = parser.parse_args()
+
     downloader = JMADataDownloader()
     
     def show_progress(current, total, msg):
         print(f"[{current}/{total}] {msg}")
     
-    results = downloader.download_all(count=3, progress_callback=show_progress)
+    results = downloader.download_all(count=max(1, args.count),
+                                      progress_callback=show_progress)
     
     print("\n下載結果:")
     for data_type, files in results.items():

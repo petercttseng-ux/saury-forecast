@@ -51,8 +51,7 @@ def ensure_data_loaded(force=False):
         data_manager.load_nprsubc_files()
         if ecdf_analyzer.data is None:
             if ecdf_analyzer.load_data():
-                ecdf_analyzer.analyze_sst()
-                ecdf_analyzer.analyze_100m_temp()
+                ecdf_analyzer.analyze_all()
                 habitat_predictor = HabitatPredictor(ecdf_analyzer)
         _data_loaded = True
 
@@ -67,7 +66,8 @@ def _nearest_cached_date(cache, date):
     if not keys:
         return None
     le = [k for k in keys if k <= date]
-    return le[-1] if le else keys[0]
+    # 作業預報不得借用所選日期之後的資料，避免時間穿越。
+    return le[-1] if le else None
 
 
 def get_nprsubt_near(date):
@@ -89,11 +89,19 @@ def compute_habitat(date):
     if pred is None:
         return None
     lats = np.asarray(pred['lats']); lons = np.asarray(pred['lons'])
-    lat_m = (lats >= config.VIEW_LAT_MIN - 0.5) & (lats <= config.VIEW_LAT_MAX + 0.5)
-    lon_m = (lons >= config.VIEW_LON_MIN - 0.5) & (lons <= config.VIEW_LON_MAX + 0.5)
+    lat_m = (lats >= config.VIEW_LAT_MIN) & (lats <= config.VIEW_LAT_MAX)
+    lon_m = (lons >= config.VIEW_LON_MIN) & (lons <= config.VIEW_LON_MAX)
     prob = pred['probability'][np.ix_(lat_m, lon_m)]
     sst = sst_data['sst'][np.ix_(lat_m, lon_m)]
-    return prob, sst, lats[lat_m], lons[lon_m]
+    meta = {
+        'variables': pred.get('variables', ['SST', '100mT']),
+        'model_label': pred.get('model_label', 'SST + 100mT'),
+        'subtemp_lag_days': pred.get('subtemp_lag_days'),
+        'score_note': pred.get('score_note'),
+        'sst_date': pred['sst_date'].strftime('%Y-%m-%d') if pred.get('sst_date') else date,
+        'subtemp_date': pred['subtemp_date'].strftime('%Y-%m-%d') if pred.get('subtemp_date') else None,
+    }
+    return prob, sst, lats[lat_m], lons[lon_m], meta
 
 
 @app.route('/')
@@ -114,7 +122,9 @@ def api_dates():
 @app.route('/api/ecdf-summary')
 def api_ecdf_summary():
     ensure_data_loaded()
-    return jsonify(ecdf_analyzer.get_summary())
+    summary = ecdf_analyzer.get_summary()
+    summary['curves'] = ecdf_analyzer.get_curve_data()
+    return jsonify(summary)
 
 
 @app.route('/api/overlay/<layer>')
@@ -144,9 +154,11 @@ def api_overlay(layer):
         if layer == 'habitat':
             hb = compute_habitat(date)
             if hb is None:
-                return jsonify({'error': '棲息機率計算失敗（缺 SST 或次表層資料）'}), 404
-            prob, sst, lats, lons = hb
-            return jsonify(ovr.render_habitat(prob, lats, lons, alpha=alpha))
+                return jsonify({'error': '相對 HSI 計算失敗（缺少 SST）'}), 404
+            prob, sst, lats, lons, meta = hb
+            rendered = ovr.render_habitat(prob, lats, lons, alpha=alpha)
+            rendered['model'] = meta
+            return jsonify(rendered)
         return jsonify({'error': f'未知圖層: {layer}'}), 400
     except Exception as e:
         return jsonify({'error': f'{layer} 渲染失敗: {e}'}), 500
@@ -171,10 +183,11 @@ def api_hotspots():
     threshold = float(request.args.get('prob', config.HOTSPOT_PROB_THRESHOLD))
     hb = compute_habitat(date)
     if hb is None:
-        return jsonify({'error': '棲息機率計算失敗'}), 404
-    prob, sst, lats, lons = hb
+        return jsonify({'error': '相對 HSI 計算失敗'}), 404
+    prob, sst, lats, lons, meta = hb
     spots = analysis.extract_hotspots(prob, lats, lons, sst=sst, prob_threshold=threshold)
-    return jsonify({'hotspots': spots, 'count': len(spots), 'date': date, 'prob_threshold': threshold})
+    return jsonify({'hotspots': spots, 'count': len(spots), 'date': date,
+                    'prob_threshold': threshold, 'model': meta})
 
 
 @app.route('/api/forecast')
@@ -187,15 +200,16 @@ def api_forecast():
     result['ecdf'] = ecdf_analyzer.get_summary()
     hb = compute_habitat(date)
     if hb is not None:
-        prob, sst, lats, lons = hb
+        prob, sst, lats, lons, meta = hb
         result['habitat'] = ovr.render_habitat(prob, lats, lons)
+        result['model'] = meta
         spots = analysis.extract_hotspots(prob, lats, lons, sst=sst,
                                           prob_threshold=config.HOTSPOT_PROB_THRESHOLD)
         result['hotspots'] = spots
         cell = np.abs(np.gradient(lats))[:, None] * 111.0 * \
                (np.abs(np.gradient(lons))[None, :] * 111.0 * np.cos(np.radians(lats.mean())))
         high_mask = np.where(np.isnan(prob), False,
-                             prob >= config.HOTSPOT_PROB_THRESHOLD)
+                             prob > config.HOTSPOT_PROB_THRESHOLD)
         result['high_prob_area_km2'] = round(float(cell[high_mask].sum()), 0)
     else:
         result['hotspots'] = []
@@ -266,6 +280,41 @@ def api_value():
     if d_cur is not None:
         out['current'] = _nearest(d_cur['speed'], d_cur['lats'], d_cur['lons'], lat, lon)
     return jsonify(out)
+
+
+@app.route('/api/data-status')
+def api_data_status():
+    """回報所選 SST 日期與實際搭配之次表層／海流資料日期。"""
+    ensure_data_loaded()
+    date = request.args.get('date', '') or latest_date()
+    sub_date = _nearest_cached_date(data_manager.nprsubt_cache, date)
+    cur_date = _nearest_cached_date(data_manager.nprsubc_cache, date)
+
+    def lag_days(source_date):
+        if not date or not source_date:
+            return None
+        return abs((datetime.strptime(date, '%Y-%m-%d') -
+                    datetime.strptime(source_date, '%Y-%m-%d')).days)
+
+    def age_days(source_date):
+        if not source_date:
+            return None
+        return max(0, (datetime.now().date() -
+                       datetime.strptime(source_date, '%Y-%m-%d').date()).days)
+
+    return jsonify({
+        'selected_date': date,
+        'sst_date': date if date in data_manager.himsst_cache else None,
+        'subtemp_date': sub_date,
+        'currents_date': cur_date,
+        'subtemp_lag_days': lag_days(sub_date),
+        'currents_lag_days': lag_days(cur_date),
+        'sst_age_days': age_days(date if date in data_manager.himsst_cache else None),
+        'subtemp_age_days': age_days(sub_date),
+        'currents_age_days': age_days(cur_date),
+        'max_model_lag_days': 3,
+        'max_operational_age_days': 3,
+    })
 
 
 def _run_update(count):

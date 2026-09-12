@@ -23,8 +23,12 @@ SST_STOPS = ['#000080', '#0000ff', '#00bfff', '#00ff80', '#80ff00',
              '#ffff00', '#ff8000', '#ff0000', '#800000']
 SST_CMAP = LinearSegmentedColormap.from_list('sst', SST_STOPS, N=256)
 
-HAB_LEVELS = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
-HAB_COLORS = ['#cccccc', '#ffff00', '#80ff00', '#00cc00', '#006600']
+HAB_LEVELS = [i / 10 for i in range(11)]
+# Viridis 十級離散色階；0.5 以上轉為綠黃，便於辨識推薦漁場門檻。
+HAB_COLORS = [
+    '#440154', '#482878', '#3e4989', '#31688e', '#26828e',
+    '#1f9e89', '#35b779', '#6dcd59', '#b4de2c', '#fde725',
+]
 HAB_CMAP = LinearSegmentedColormap.from_list('habitat', HAB_COLORS, N=len(HAB_COLORS))
 HAB_NORM = BoundaryNorm(HAB_LEVELS, HAB_CMAP.N)
 
@@ -90,7 +94,7 @@ def render_subtemp(nprsubt_data, depth='100m', alpha=210):
                          f'{depth} 水溫', '°C', SST_STOPS, alpha)
 
 
-# ── 棲息機率（離散場）──────────────────────────────────────
+# ── 相對棲地適合度 HSI（離散場）───────────────────────────
 def render_habitat(prob, lats, lons, alpha=200):
     merc, bounds = resample_to_mercator(prob, lats, lons,
                                         LAT_MIN, LAT_MAX, LON_MIN, LON_MAX)
@@ -99,14 +103,12 @@ def render_habitat(prob, lats, lons, alpha=200):
         'image': _rgba_png_b64(rgba),
         'bounds': bounds,
         'legend': {
-            'type': 'discrete', 'label': '秋刀魚棲息機率', 'unit': '',
+            'type': 'discrete', 'label': '秋刀魚相對棲地適合度 HSI', 'unit': '',
             'items': [
-                {'color': '#cccccc', 'text': '低 (<20%)'},
-                {'color': '#ffff00', 'text': '中低 (20–40%)'},
-                {'color': '#80ff00', 'text': '中 (40–60%)'},
-                {'color': '#00cc00', 'text': '高 (60–80%)'},
-                {'color': '#006600', 'text': '極高 (>80%)'},
-            ]
+                {'color': color, 'text': f'{i / 10:.1f}–{(i + 1) / 10:.1f}'}
+                for i, color in enumerate(HAB_COLORS)
+            ],
+            'note': '推薦漁場：HSI > 0.5',
         }
     }
 

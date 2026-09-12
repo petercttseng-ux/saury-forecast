@@ -11,8 +11,9 @@ let curData = null;          // 當前日期解碼後的資料
 const gridCache = {};        // date -> 原始 JSON
 let overlayOpacity = 0.82;
 
-// 漁場熱區判定門檻（棲息機率 0-1）；2026-08-19 由 0.6 調降為 0.5，2026-08-20 再調降為 0.4
-const HOTSPOT_PROB_THR = 0.4;
+// 漁場熱區判定門檻（相對棲地適合度 HSI，0-1）
+const HOTSPOT_PROB_THR = 0.5;
+const MAX_SUBSURFACE_LAG_DAYS = 3;
 
 // ── Mercator ─────────────────────────────────────────────
 const D2R = Math.PI / 180;
@@ -33,7 +34,7 @@ function currentDate() { return document.getElementById('date-select').value; }
 function setStatus(t, c) { const e = document.getElementById('status-text'); e.textContent = t; e.className = c || 'status-idle'; }
 function showMask(t) { document.getElementById('mask-text').textContent = t; document.getElementById('overlay-mask').classList.remove('hidden'); }
 function hideMask() { document.getElementById('overlay-mask').classList.add('hidden'); }
-function layerLabel(n){return {sst:'海面水溫',subtemp:'次表層水溫',currents:'表面海流',habitat:'棲息機率',fronts:'溫度鋒面',hotspots:'漁場熱區'}[n]||n;}
+function layerLabel(n){return {sst:'海面水溫',subtemp:'次表層水溫',currents:'表面海流',habitat:'棲地適合度 HSI',fronts:'溫度鋒面',hotspots:'漁場熱區'}[n]||n;}
 
 // ── 解碼網格 ─────────────────────────────────────────────
 function decodeGrid(g) {
@@ -74,7 +75,7 @@ function nearest(G, lat, lon) {
 
 // ── 色彩 ─────────────────────────────────────────────────
 const SST_STOPS = ['#000080','#0000ff','#00bfff','#00ff80','#80ff00','#ffff00','#ff8000','#ff0000','#800000'];
-const HAB_COLORS = ['#cccccc','#ffff00','#80ff00','#00cc00','#006600'];
+const HAB_COLORS = ['#440154','#482878','#3e4989','#31688e','#26828e','#1f9e89','#35b779','#6dcd59','#b4de2c','#fde725'];
 function hex2rgb(h){return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];}
 const SST_RGB = SST_STOPS.map(hex2rgb);
 function rampColor(t, rgbs){ // t 0..1
@@ -85,9 +86,8 @@ function rampColor(t, rgbs){ // t 0..1
 }
 function habColor(p){ // 離散 0-1
   if (isNaN(p)) return null;
-  if (p<0.2) return hex2rgb(HAB_COLORS[0]); if (p<0.4) return hex2rgb(HAB_COLORS[1]);
-  if (p<0.6) return hex2rgb(HAB_COLORS[2]); if (p<0.8) return hex2rgb(HAB_COLORS[3]);
-  return hex2rgb(HAB_COLORS[4]);
+  const i = Math.min(HAB_COLORS.length - 1, Math.max(0, Math.floor(p * 10)));
+  return hex2rgb(HAB_COLORS[i]);
 }
 
 // ── 輸出畫布尺寸（Mercator）──────────────────────────────
@@ -128,17 +128,19 @@ function renderScalar(G, vmin, vmax, label, unit, alpha) {
   return { url: cv.toDataURL(), legend: { type:'gradient', label, unit, vmin, vmax, stops: SST_STOPS } };
 }
 
-// ── 棲息機率 ─────────────────────────────────────────────
+// ── 相對棲地適合度 HSI ──────────────────────────────────
 function probScore(v, e) {
   if (isNaN(v)) return NaN;
-  const total = (e.v[e.v.length-1] - e.v[0]) || 1;
   if (v >= e.p25 && v <= e.p75) return 1;
-  if (v < e.p25) return Math.max(0, 1 - 2*(e.p25 - v)/total);
-  return Math.max(0, 1 - 2*(v - e.p75)/total);
+  if (v > e.p10 && v < e.p25) return (v-e.p10)/((e.p25-e.p10)||1);
+  if (v > e.p75 && v < e.p90) return (e.p90-v)/((e.p90-e.p75)||1);
+  return 0;
 }
+function dayLag(a,b){ return Math.abs((Date.parse(a+'T00:00:00Z')-Date.parse(b+'T00:00:00Z'))/86400000); }
 function computeHabitat() {
   const S = curData.sst, T = curData.sub && curData.sub['100m'];
-  if (!T || !ECDF) return null;
+  if (!ECDF) return null;
+  const useSub = Boolean(T && curData.subDate && dayLag(curData.date,curData.subDate)<=MAX_SUBSURFACE_LAG_DAYS);
   const nx = S.nx, ny = S.ny;
   const prob = new Float32Array(nx*ny);
   for (let y = 0; y < ny; y++) {
@@ -147,12 +149,15 @@ function computeHabitat() {
       const lon = S.lonW + (x/(nx-1))*(S.lonE - S.lonW);
       const sv = S.data[y*nx+x];
       if (isNaN(sv)) { prob[y*nx+x] = NaN; continue; }
-      const tv = sample(T, lat, lon);
-      const ps = probScore(sv, ECDF.sst), pt = probScore(tv, ECDF.temp100);
+      const ps = probScore(sv, ECDF.sst);
+      if (!useSub) { prob[y*nx+x] = ps; continue; }
+      const tv = sample(T, lat, lon), pt = probScore(tv, ECDF.temp100);
       prob[y*nx+x] = (isNaN(ps)||isNaN(pt)) ? NaN : Math.sqrt(ps*pt);
     }
   }
-  return { data: prob, nx, ny, latN: S.latN, latS: S.latS, lonW: S.lonW, lonE: S.lonE };
+  return { data: prob, nx, ny, latN: S.latN, latS: S.latS, lonW: S.lonW, lonE: S.lonE,
+    modelLabel: useSub ? 'SST + 100mT' : 'SST（次表層資料超過 3 日或缺少）',
+    variables: useSub ? ['SST','100mT'] : ['SST'] };
 }
 function renderHabitat(P, alpha) {
   const { OW, OH } = outSize();
@@ -165,9 +170,9 @@ function renderHabitat(P, alpha) {
     d[o]=c[0]; d[o+1]=c[1]; d[o+2]=c[2]; d[o+3]=Math.round(alpha*255);
   });
   ctx.putImageData(img, 0, 0);
-  return { url: cv.toDataURL(), legend: { type:'discrete', label:'秋刀魚棲息機率', items:[
-    {color:'#cccccc',text:'低 (<20%)'},{color:'#ffff00',text:'中低 (20–40%)'},{color:'#80ff00',text:'中 (40–60%)'},
-    {color:'#00cc00',text:'高 (60–80%)'},{color:'#006600',text:'極高 (>80%)'}]}};
+  return { url: cv.toDataURL(), legend: { type:'discrete', label:'秋刀魚相對棲地適合度 HSI',
+    items:HAB_COLORS.map((color,i)=>({color,text:`${(i/10).toFixed(1)}–${((i+1)/10).toFixed(1)}`})),
+    note:'推薦漁場：HSI > 0.5' }};
 }
 
 // ── 表面海流（箭頭畫布）──────────────────────────────────
@@ -275,7 +280,7 @@ function extractHotspots(P, thr) {
   const cell=dlat*dlon;
   let cur=0; const spots=[];
   for (let i=0;i<nx*ny;i++){
-    if (lab[i]||isNaN(P.data[i])||P.data[i]<thr) continue;
+    if (lab[i]||isNaN(P.data[i])||P.data[i]<=thr) continue;
     cur++; const stack=[i]; lab[i]=cur;
     let sw=0, slat=0, slon=0, area=0, pmax=0, ssum=0, scnt=0;
     while (stack.length){
@@ -286,7 +291,7 @@ function extractHotspots(P, thr) {
       const sv=sample(curData.sst,lat,lon); if(!isNaN(sv)){ssum+=sv;scnt++;}
       [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{
         const xx=x+dx, yy=y+dy; if(xx<0||yy<0||xx>=nx||yy>=ny) return;
-        const k=yy*nx+xx; if(!lab[k]&&!isNaN(P.data[k])&&P.data[k]>=thr){lab[k]=cur;stack.push(k);}
+        const k=yy*nx+xx; if(!lab[k]&&!isNaN(P.data[k])&&P.data[k]>thr){lab[k]=cur;stack.push(k);}
       });
     }
     if (area<1500) continue;
@@ -317,7 +322,7 @@ function loadImageLayer(name) {
       }
       else if (name === 'currents') addImage('currents', renderCurrents(a), a);
       else if (name === 'habitat') {
-        const P = computeHabitat(); if (!P) { setStatus('缺次表層資料，無法計算棲息機率','status-idle'); return; }
+        const P = computeHabitat(); if (!P) { setStatus('缺少 ECDF 或 SST，無法計算 HSI','status-idle'); return; }
         curData._prob = P; addImage('habitat', renderHabitat(P, a), a);
       }
       setStatus(`${layerLabel(name)} 已繪製`, 'status-ok');
@@ -372,7 +377,7 @@ function drawHotspots(spots) {
   const grp = L.layerGroup();
   spots.forEach(s => {
     L.marker(s.center, { icon: L.divIcon({ className:'', html:`<div class="hotspot-marker">${s.rank}</div>`, iconSize:[30,30], iconAnchor:[15,15] }) })
-      .bindPopup(`<div class="hs-popup-title">推薦漁場 #${s.rank}</div>座標：${s.center[0].toFixed(2)}°N, ${s.center[1].toFixed(2)}°E<br>平均機率：${(s.mean_prob*100).toFixed(0)}%（最高 ${(s.max_prob*100).toFixed(0)}%）<br>面積：約 ${s.area_km2.toLocaleString()} km²<br>${s.mean_sst!=null?'平均 SST：'+s.mean_sst+' °C':''}`)
+      .bindPopup(`<div class="hs-popup-title">推薦漁場 #${s.rank}</div>座標：${s.center[0].toFixed(2)}°N, ${s.center[1].toFixed(2)}°E<br>平均 HSI：${s.mean_prob.toFixed(2)}（最高 ${s.max_prob.toFixed(2)}）<br>面積：約 ${s.area_km2.toLocaleString()} km²<br>${s.mean_sst!=null?'平均 SST：'+s.mean_sst+' °C':''}`)
       .addTo(grp);
   });
   grp.addTo(map); layers.hotspots = grp;
@@ -384,7 +389,7 @@ function renderHotspotList(spots) {
   list.innerHTML = spots.map(s => `<div class="hotspot-item" onclick="flyTo(${s.center[0]},${s.center[1]})">
     <div class="hs-rank">${s.rank}</div><div class="hs-body">
     <div class="hs-coord">${s.center[0].toFixed(2)}°N, ${s.center[1].toFixed(2)}°E</div>
-    <div class="hs-meta">機率 ${(s.mean_prob*100).toFixed(0)}% · ${s.area_km2.toLocaleString()} km²${s.mean_sst!=null?' · '+s.mean_sst+'°C':''}</div></div></div>`).join('');
+    <div class="hs-meta">HSI ${s.mean_prob.toFixed(2)} · ${s.area_km2.toLocaleString()} km²${s.mean_sst!=null?' · '+s.mean_sst+'°C':''}</div></div></div>`).join('');
 }
 window.flyTo = (lat, lon) => map.flyTo([lat, lon], 6, { duration: 0.8 });
 
@@ -445,7 +450,8 @@ window.runForecast = async function() {
   showMask('速預報分析中，請稍候…');
   await new Promise(r=>setTimeout(r,30));
   try {
-    setChk('sst',true); loadImageLayer('sst');
+    setChk('sst',true);
+    addImage('sst', renderScalar(curData.sst, 0, 32, '海面水溫 SST', '°C', overlayOpacity), overlayOpacity);
     const P = computeHabitat();
     let spots = [];
     if (P) { curData._prob=P; setChk('habitat',true); addImage('habitat', renderHabitat(P, overlayOpacity), overlayOpacity);
@@ -453,9 +459,10 @@ window.runForecast = async function() {
     setChk('fronts',true); document.getElementById('opt-fronts').classList.add('show'); loadFronts();
     let area = 0;
     if (P){ const dlat=Math.abs((P.latN-P.latS)/(P.ny-1))*111, dlon=Math.abs((P.lonE-P.lonW)/(P.nx-1))*111*Math.cos((P.latN+P.latS)/2*D2R), cell=dlat*dlon;
-      for (let i=0;i<P.data.length;i++) if(!isNaN(P.data[i])&&P.data[i]>=HOTSPOT_PROB_THR) area+=cell; }
-    lastForecast = { date: currentDate(), spots, area: Math.round(area), ecdf: ECDF.summary };
-    setStatus(`✓ ${currentDate()} 速預報完成：${spots.length} 個推薦漁場 · 高機率海域 ${Math.round(area).toLocaleString()} km²`, 'status-ok');
+      for (let i=0;i<P.data.length;i++) if(!isNaN(P.data[i])&&P.data[i]>HOTSPOT_PROB_THR) area+=cell; }
+    lastForecast = { date: currentDate(), spots, area: Math.round(area), ecdf: ECDF.summary,
+      modelLabel: P ? P.modelLabel : '無法計算' };
+    setStatus(`✓ ${currentDate()} 速預報完成：${spots.length} 個推薦漁場 · HSI > ${HOTSPOT_PROB_THR} 海域 ${Math.round(area).toLocaleString()} km²`, 'status-ok');
   } catch(e){ setStatus('速預報失敗：'+e,'status-idle'); console.error(e); }
   hideMask();
 };
@@ -465,16 +472,15 @@ function setChk(n,on){ const c=document.querySelector(`.layer-chk[data-layer="${
 window.downloadReport = function() {
   if (!lastForecast) { alert('請先執行一鍵速預報'); return; }
   const d = lastForecast, e = d.ecdf||{};
-  const rows = d.spots.map(s=>`<tr><td>${s.rank}</td><td>${s.center[0].toFixed(2)}°N, ${s.center[1].toFixed(2)}°E</td><td>${(s.mean_prob*100).toFixed(0)}%</td><td>${s.area_km2.toLocaleString()}</td><td>${s.mean_sst!=null?s.mean_sst:'—'}</td></tr>`).join('');
+  const rows = d.spots.map(s=>`<tr><td>${s.rank}</td><td>${s.center[0].toFixed(2)}°N, ${s.center[1].toFixed(2)}°E</td><td>${s.mean_prob.toFixed(2)}</td><td>${s.area_km2.toLocaleString()}</td><td>${s.mean_sst!=null?s.mean_sst:'—'}</td></tr>`).join('');
+  const paramRows = Object.values(e.parameters||{}).map(p=>`<tr><td>${p.label}</td><td>${p.core[0]}–${p.core[1]} ${p.unit}</td><td>${p.probable[0]}–${p.probable[1]} ${p.unit}</td><td>${p.d_max_value} ${p.unit}</td></tr>`).join('');
   const html = `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8"><title>秋刀魚漁場速預報報告 ${d.date}</title>
 <style>body{font-family:'Noto Sans TC',sans-serif;max-width:820px;margin:30px auto;color:#22303f;padding:0 20px}h1{color:#0d2a4a;border-bottom:3px solid #e07a1f;padding-bottom:8px}h2{color:#14395f;margin-top:24px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #d9e2ec;padding:8px 10px;text-align:center;font-size:14px}th{background:#14395f;color:#fff}tr:nth-child(even){background:#f5f9fc}.kpi{display:flex;gap:16px;margin:16px 0}.card{flex:1;background:#f0f4f8;border-radius:10px;padding:14px;text-align:center}.card b{display:block;font-size:24px;color:#e07a1f}.foot{margin-top:30px;color:#5b6b7c;font-size:12px;border-top:1px solid #d9e2ec;padding-top:10px}</style></head><body>
 <h1>🎯 秋刀魚漁場速預報報告</h1><p>資料日期：${d.date}｜農業部水產試驗所 漁海況研究小組</p>
-<div class="kpi"><div class="card"><b>${d.spots.length}</b>推薦漁場熱區</div><div class="card"><b>${d.area.toLocaleString()}</b>高機率海域 (km²)</div></div>
-<h2>ECDF 最適環境參數</h2><table><tr><th>參數</th><th>最適範圍</th><th>平均</th><th>觀測範圍</th></tr>
-<tr><td>海面水溫 SST</td><td>${e.SST_optimal||'—'}</td><td>${e.SST_mean||'—'}</td><td>${e.SST_range||'—'}</td></tr>
-<tr><td>100m 水溫</td><td>${e['100mT_optimal']||'—'}</td><td>${e['100mT_mean']||'—'}</td><td>${e['100mT_range']||'—'}</td></tr></table>
-<h2>推薦漁場熱區</h2><table><tr><th>排名</th><th>中心座標</th><th>平均機率</th><th>面積 (km²)</th><th>平均SST</th></tr>${rows||'<tr><td colspan=5>無</td></tr>'}</table>
-<p class="foot">資料來源：日本氣象廳 JMA GOOS。棲息機率依歷史秋刀魚 CPUE 之 SST 與 100m 水溫 ECDF 分析推估，僅供參考。</p></body></html>`;
+<div class="kpi"><div class="card"><b>${d.spots.length}</b>推薦漁場熱區</div><div class="card"><b>${d.area.toLocaleString()}</b>HSI > ${HOTSPOT_PROB_THR} 海域 (km²)</div></div><p>作業模型：${d.modelLabel}</p>
+<h2>CPUE 加權 ECDF 環境窗</h2><table><tr><th>參數</th><th>核心 P25–P75</th><th>可能 P10–P90</th><th>最大 ECDF 差異位置</th></tr>${paramRows}</table>
+<h2>推薦漁場熱區</h2><table><tr><th>排名</th><th>中心座標</th><th>平均 HSI</th><th>面積 (km²)</th><th>平均SST</th></tr>${rows||'<tr><td colspan=5>無</td></tr>'}</table>
+<p class="foot">資料來源：日本氣象廳 JMA GOOS。HSI 為歷史正 CPUE 樣本導出的相對適合度，不是校準後的出現機率；僅供規劃航線與現場判讀，仍須併用氣象、法規與船上探測。</p></body></html>`;
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([html],{type:'text/html;charset=utf-8'}));
   a.download=`秋刀魚速預報_${d.date}.html`; a.click();
 };
@@ -489,7 +495,10 @@ function renderLegend() {
     if (lg.type==='gradient'){
       const g=lg.stops.map((c,i)=>`${c} ${(i/(lg.stops.length-1)*100).toFixed(0)}%`).join(',');
       html+=`<div class="legend-bar" style="background:linear-gradient(90deg,${g})"></div><div class="legend-scale"><span>${lg.vmin}</span><span>${lg.vmax}</span></div>`;
-    } else if (lg.type==='discrete'){ lg.items.forEach(it=>html+=`<div class="legend-item"><span class="legend-sw" style="background:${it.color}"></span>${it.text}</div>`); }
+    } else if (lg.type==='discrete'){
+      lg.items.forEach(it=>html+=`<div class="legend-item"><span class="legend-sw" style="background:${it.color}"></span>${it.text}</div>`);
+      if(lg.note) html+=`<div class="legend-note">${lg.note}</div>`;
+    }
     else if (lg.type==='line'){ html+=`<div class="legend-item"><span class="legend-sw" style="background:${lg.color};height:3px"></span>${lg.note||''}</div>`; }
     else if (lg.type==='vector'){ html+=`<div class="legend-item">${lg.note||''}</div>`; }
     html+='</div>';
@@ -516,26 +525,78 @@ async function loadDate(date) {
     const r = await fetch(DATA+date+'.json'); gridCache[date] = await r.json();
   }
   const j = gridCache[date];
-  curData = { date, sst: decodeGrid(j.sst) };
+  curData = { date, sst: decodeGrid(j.sst), subDate:j.subDate||null, curDate:j.curDate||null };
   if (j.sub) { curData.sub = {}; for (const k in j.sub) curData.sub[k]=decodeGrid(j.sub[k]); }
   if (j.cur) { curData.cur = { u: decodeGrid(j.cur.u), v: decodeGrid(j.cur.v) }; }
+  renderFreshness();
+}
+let ecdfChartState=null, ecdfResizeTimer=null;
+function setupEcdfChart(curves, summaries){
+  const sel=document.getElementById('ecdf-param');
+  if(!sel||!curves||!summaries)return;
+  ecdfChartState={curves,summaries};
+  const keys=Object.keys(summaries).filter(k=>curves[k]);
+  sel.innerHTML=keys.map(k=>`<option value="${k}">${summaries[k].label}</option>`).join('');
+  sel.value=keys.includes('sst')?'sst':keys[0];
+  sel.onchange=()=>drawEcdfChart(sel.value);
+  drawEcdfChart(sel.value);
+  if(!window.__ecdfResizeBound){
+    window.__ecdfResizeBound=true;
+    window.addEventListener('resize',()=>{clearTimeout(ecdfResizeTimer);ecdfResizeTimer=setTimeout(()=>{const e=document.getElementById('ecdf-param');if(e?.value)drawEcdfChart(e.value);},120);});
+  }
+}
+function drawEcdfChart(key){
+  const canvas=document.getElementById('ecdf-chart'), note=document.getElementById('ecdf-chart-note');
+  const curve=ecdfChartState?.curves?.[key], meta=ecdfChartState?.summaries?.[key];
+  if(!canvas||!curve||!meta)return;
+  const w=Math.max(240,Math.floor(canvas.clientWidth||286)),h=190,dpr=window.devicePixelRatio||1;
+  canvas.width=Math.floor(w*dpr);canvas.height=Math.floor(h*dpr);canvas.style.height=h+'px';
+  const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
+  const m={l:34,r:10,t:12,b:30},pw=w-m.l-m.r,ph=h-m.t-m.b;
+  const xmin=curve.p10,xmax=curve.p90,span=(xmax-xmin)||1;
+  const sx=x=>m.l+(x-xmin)/span*pw, sy=y=>m.t+(1-y)*ph;
+  ctx.fillStyle='#eaf3f9';ctx.fillRect(sx(curve.p25),m.t,sx(curve.p75)-sx(curve.p25),ph);
+  ctx.font='10px system-ui';ctx.textAlign='right';ctx.textBaseline='middle';
+  [0,.25,.5,.75,1].forEach(y=>{ctx.strokeStyle='#d9e2ec';ctx.lineWidth=1;ctx.setLineDash([]);ctx.beginPath();ctx.moveTo(m.l,sy(y));ctx.lineTo(w-m.r,sy(y));ctx.stroke();ctx.fillStyle='#5b6b7c';ctx.fillText(y.toFixed(2).replace(/0+$/,'').replace(/\.$/,''),m.l-5,sy(y));});
+  ctx.strokeStyle='#8394a7';ctx.beginPath();ctx.moveTo(m.l,m.t);ctx.lineTo(m.l,h-m.b);ctx.lineTo(w-m.r,h-m.b);ctx.stroke();
+  ctx.textAlign='center';ctx.textBaseline='top';
+  [xmin,(xmin+xmax)/2,xmax].forEach(x=>{ctx.fillStyle='#5b6b7c';ctx.fillText(Number(x.toFixed(2)).toString(),sx(x),h-m.b+5);});
+  ctx.fillText(meta.unit,m.l+pw/2,h-12);
+  const plot=(ys,color,dash,width)=>{ctx.save();ctx.beginPath();ctx.rect(m.l,m.t,pw,ph);ctx.clip();ctx.strokeStyle=color;ctx.lineWidth=width;ctx.setLineDash(dash);ctx.beginPath();let started=false;curve.v.forEach((x,i)=>{if(x<xmin||x>xmax)return;const px=sx(x),py=sy(ys[i]);if(!started){ctx.moveTo(px,py);started=true;}else ctx.lineTo(px,py);});ctx.stroke();ctx.restore();};
+  plot(curve.cdf,'#64748b',[5,3],1.7);plot(curve.weightedCdf,'#e07a1f',[],2.4);
+  if(curve.dMaxValue>=xmin&&curve.dMaxValue<=xmax){ctx.strokeStyle='#1b6ca8';ctx.setLineDash([2,3]);ctx.beginPath();ctx.moveTo(sx(curve.dMaxValue),m.t);ctx.lineTo(sx(curve.dMaxValue),h-m.b);ctx.stroke();}
+  const defaultText=`藍底為核心 P25–P75；X 軸聚焦 P10–P90。最大 |F−G|=${curve.dMaxAbs}，位置 ${curve.dMaxValue} ${meta.unit}。`;
+  note.textContent=defaultText;canvas.setAttribute('aria-label',`${meta.label} ECDF。${defaultText}`);
+  canvas.onmousemove=ev=>{const r=canvas.getBoundingClientRect(),xv=xmin+Math.max(0,Math.min(1,(ev.clientX-r.left-m.l)/pw))*span;let best=0;for(let i=1;i<curve.v.length;i++)if(Math.abs(curve.v[i]-xv)<Math.abs(curve.v[best]-xv))best=i;note.textContent=`${curve.v[best]} ${meta.unit}｜F(x) ${curve.cdf[best].toFixed(3)}｜CPUE 加權 G(x) ${curve.weightedCdf[best].toFixed(3)}`;};
+  canvas.onmouseleave=()=>{note.textContent=defaultText;};
 }
 function fillEcdf() {
   const d=ECDF.summary, el=document.getElementById('ecdf-content'); el.className='ecdf-grid';
-  el.innerHTML=`<div class="ecdf-row"><span class="ecdf-k">SST 最適範圍</span><span class="ecdf-v">${d.SST_optimal||'—'}</span></div>
-    <div class="ecdf-row"><span class="ecdf-k">SST 平均</span><span class="ecdf-v">${d.SST_mean||'—'}</span></div>
-    <div class="ecdf-row"><span class="ecdf-k">100m 最適範圍</span><span class="ecdf-v">${d['100mT_optimal']||'—'}</span></div>
-    <div class="ecdf-row"><span class="ecdf-k">100m 平均</span><span class="ecdf-v">${d['100mT_mean']||'—'}</span></div>
-    <div class="ecdf-row"><span class="ecdf-k">歷史漁獲筆數</span><span class="ecdf-v">${d.catch_count||0} / ${d.data_count||0}</span></div>`;
+  const params=Object.values(d.parameters||{});
+  const primary=params.filter(p=>['SST','100mT'].includes(p.column));
+  const secondary=params.filter(p=>!['SST','100mT'].includes(p.column));
+  const row=p=>`<div class="ecdf-row"><span class="ecdf-k">${p.label}</span><span class="ecdf-v">${p.core[0]}–${p.core[1]} ${p.unit}</span></div>`;
+  el.innerHTML=primary.map(row).join('')+
+    `<details class="ecdf-more"><summary>查看全部 7 項參數</summary>${secondary.map(row).join('')}</details>`+
+    `<div class="method-note">核心窗＝CPUE 加權 P25–P75；HSI 為相對適合度，不是出現機率。</div>`+
+    `<div class="ecdf-row"><span class="ecdf-k">歷史樣本</span><span class="ecdf-v">${d.catch_count||0} 筆（${(d.year_range||[]).join('–')}）</span></div>`;
+  setupEcdfChart(ECDF.parameters,d.parameters);
+}
+function renderFreshness(){
+  const el=document.getElementById('data-freshness'); if(!el||!curData)return;
+  const age=date=>date?Math.max(0,Math.floor((Date.now()-Date.parse(date+'T00:00:00Z'))/86400000)):null;
+  const entries=[['SST',curData.date,0],['100mT',curData.subDate,curData.subDate?dayLag(curData.date,curData.subDate):null],['海流',curData.curDate,curData.curDate?dayLag(curData.date,curData.curDate):null]];
+  el.innerHTML=entries.map(([name,date,lag])=>{const days=age(date), stale=days==null||days>MAX_SUBSURFACE_LAG_DAYS||lag==null||lag>MAX_SUBSURFACE_LAG_DAYS; return `<div class="fresh-row"><span>${name}</span><span class="fresh-badge ${stale?'stale':'fresh'}">${date||'缺資料'}${days?` · 距今 ${days} 日`:''}${lag?` · 較 SST 落後 ${lag} 日`:''}</span></div>`}).join('');
 }
 function tick(){ document.getElementById('current-time').textContent=new Date().toLocaleString('zh-TW',{hour12:false}); }
 
 async function init() {
   try {
-    const man = await (await fetch(DATA+'manifest.json')).json();
+    const cacheBust='?t='+Date.now();
+    const man = await (await fetch(DATA+'manifest.json'+cacheBust,{cache:'no-store'})).json();
     VIEW = man.view;
     map.fitBounds(viewBounds());
-    ECDF = await (await fetch(DATA+'ecdf.json')).json();
+    ECDF = await (await fetch(DATA+'ecdf.json'+cacheBust,{cache:'no-store'})).json();
     fillEcdf();
     const sel = document.getElementById('date-select');
     sel.innerHTML = man.dates.map(d=>`<option value="${d}">${d}</option>`).join('');
