@@ -5,8 +5,9 @@
 'use strict';
 
 const DATA = './data/';
-let VIEW = { latN: 56, latS: 17, lonW: 114, lonE: 162 };
+let VIEW = { latN: 56, latS: 17, lonW: 114, lonE: 180 };
 let ECDF = null;
+let MANIFEST = null;
 let curData = null;          // 當前日期解碼後的資料
 const gridCache = {};        // date -> 原始 JSON
 let overlayOpacity = 0.82;
@@ -14,6 +15,9 @@ let overlayOpacity = 0.82;
 // 漁場熱區判定門檻（相對棲地適合度 HSI，0-1）
 const HOTSPOT_PROB_THR = 0.5;
 const MAX_SUBSURFACE_LAG_DAYS = 3;
+// JMA 次表層／海流產品的東界（manifest 會覆寫）
+let SUB_EAST_LIMIT = 163.45;
+let CUR_EAST_LIMIT = 163.5;
 
 // ── Mercator ─────────────────────────────────────────────
 const D2R = Math.PI / 180;
@@ -137,27 +141,54 @@ function probScore(v, e) {
   return 0;
 }
 function dayLag(a,b){ return Math.abs((Date.parse(a+'T00:00:00Z')-Date.parse(b+'T00:00:00Z'))/86400000); }
+
+/* 相對棲地適合度 HSI —— 逐格決定模式組成。
+   JMA 次表層產品（npr_subt_jpn_D）東界僅至 163.45°E，其以東沒有任何
+   JMA 次表層資料。因此不是「整張圖用或不用 100 m 水溫」，而是逐格判斷：
+     · 有 100 m 水溫且時效合格 → 雙因子（SST × 100mT 的幾何平均）
+     · 無（東側海域或該格缺值）→ 降階為 SST 單因子
+   絕不以邊界值外推填滿東側，也不把過舊的次表層資料靜默混入。          */
 function computeHabitat() {
   const S = curData.sst, T = curData.sub && curData.sub['100m'];
   if (!ECDF) return null;
-  const useSub = Boolean(T && curData.subDate && dayLag(curData.date,curData.subDate)<=MAX_SUBSURFACE_LAG_DAYS);
+  // 時效以「基準日」為準：預報日的次表層場本身也是由基準日外推而來，
+  // 若拿預報有效日去比對分析日，＋3 日會被誤判為過期而在序列中途換模式，
+  // 產生純屬人為的熱區跳動。
+  const refDate = (curData.kind === 'forecast' && curData.baseDate) ? curData.baseDate : curData.date;
+  const subFresh = Boolean(T && curData.subDate &&
+                           dayLag(refDate, curData.subDate) <= MAX_SUBSURFACE_LAG_DAYS);
   const nx = S.nx, ny = S.ny;
   const prob = new Float32Array(nx*ny);
+  const mode = new Uint8Array(nx*ny);      // 0=無值 1=SST單因子 2=雙因子
+  let nDual = 0, nSst = 0;
   for (let y = 0; y < ny; y++) {
     const lat = S.latN + (y/(ny-1))*(S.latS - S.latN);
     for (let x = 0; x < nx; x++) {
-      const lon = S.lonW + (x/(nx-1))*(S.lonE - S.lonW);
-      const sv = S.data[y*nx+x];
-      if (isNaN(sv)) { prob[y*nx+x] = NaN; continue; }
+      const i = y*nx+x;
+      const sv = S.data[i];
+      if (isNaN(sv)) { prob[i] = NaN; continue; }
       const ps = probScore(sv, ECDF.sst);
-      if (!useSub) { prob[y*nx+x] = ps; continue; }
-      const tv = sample(T, lat, lon), pt = probScore(tv, ECDF.temp100);
-      prob[y*nx+x] = (isNaN(ps)||isNaN(pt)) ? NaN : Math.sqrt(ps*pt);
+      if (isNaN(ps)) { prob[i] = NaN; continue; }
+      if (subFresh) {
+        const lon = S.lonW + (x/(nx-1))*(S.lonE - S.lonW);
+        const tv = sample(T, lat, lon);
+        if (!isNaN(tv)) {
+          const pt = probScore(tv, ECDF.temp100);
+          if (!isNaN(pt)) { prob[i] = Math.sqrt(ps*pt); mode[i] = 2; nDual++; continue; }
+        }
+      }
+      prob[i] = ps; mode[i] = 1; nSst++;    // 降階：SST 單因子
     }
   }
-  return { data: prob, nx, ny, latN: S.latN, latS: S.latS, lonW: S.lonW, lonE: S.lonE,
-    modelLabel: useSub ? 'SST + 100mT' : 'SST（次表層資料超過 3 日或缺少）',
-    variables: useSub ? ['SST','100mT'] : ['SST'] };
+  const tot = nDual + nSst;
+  const dualPct = tot ? Math.round(nDual/tot*100) : 0;
+  let label;
+  if (!subFresh)        label = 'SST 單因子（次表層資料缺少或落後逾 ' + MAX_SUBSURFACE_LAG_DAYS + ' 日）';
+  else if (dualPct >= 99) label = 'SST × 100 m 水溫（雙因子）';
+  else                  label = `雙因子 ${dualPct}% ／ SST 單因子 ${100-dualPct}%（${SUB_EAST_LIMIT}°E 以東無 JMA 次表層產品）`;
+  return { data: prob, mode, nx, ny, latN: S.latN, latS: S.latS, lonW: S.lonW, lonE: S.lonE,
+    modelLabel: label, dualPct,
+    variables: dualPct > 0 ? ['SST','100mT'] : ['SST'] };
 }
 function renderHabitat(P, alpha) {
   const { OW, OH } = outSize();
@@ -318,9 +349,17 @@ function loadImageLayer(name) {
       if (name === 'sst') addImage('sst', renderScalar(curData.sst, 0, 32, '海面水溫 SST', '°C', a), a);
       else if (name === 'subtemp') {
         const dep = document.getElementById('sub-depth').value;
+        if (!curData.sub || !curData.sub[dep]) {
+          setStatus(`${curData.date} 無次表層水溫資料`, 'status-idle'); setChk('subtemp', false); return;
+        }
         addImage('subtemp', renderScalar(curData.sub[dep], 0, 25, dep+' 水溫', '°C', a), a);
       }
-      else if (name === 'currents') addImage('currents', renderCurrents(a), a);
+      else if (name === 'currents') {
+        if (!curData.cur) {
+          setStatus(`${curData.date} 無表面海流資料`, 'status-idle'); setChk('currents', false); return;
+        }
+        addImage('currents', renderCurrents(a), a);
+      }
       else if (name === 'habitat') {
         const P = computeHabitat(); if (!P) { setStatus('缺少 ECDF 或 SST，無法計算 HSI','status-idle'); return; }
         curData._prob = P; addImage('habitat', renderHabitat(P, a), a);
@@ -343,7 +382,12 @@ function loadFronts() {
   renderLegend(); setStatus(`偵測到 ${lines.length} 段鋒面`, 'status-ok');
 }
 function loadIsotherms(which) {
-  const G = which==='sst' ? curData.sst : curData.sub[document.getElementById('sub-depth').value];
+  const dep = document.getElementById('sub-depth').value;
+  if (which!=='sst' && (!curData.sub || !curData.sub[dep])) {
+    setStatus(`${curData.date} 無次表層水溫資料，無法繪製等溫線`, 'status-idle');
+    const chk=document.getElementById('subtemp-iso'); if(chk) chk.checked=false; return;
+  }
+  const G = which==='sst' ? curData.sst : curData.sub[dep];
   const iv = parseFloat(document.getElementById(which==='sst'?'sst-iso-int':'subtemp-iso-int').value);
   const vmax = which==='sst'?32:25;
   const th = []; for (let t=0; t<=vmax; t+=iv) th.push(t);
@@ -419,11 +463,74 @@ window.setOpacity = function(v){ overlayOpacity=parseFloat(v); IMAGE_LAYERS.forE
 
 window.onDateChange = async function() {
   await loadDate(currentDate());
+  syncLeadButtons();
   IMAGE_LAYERS.forEach(n=>{ if(layers[n]) loadImageLayer(n); });
   if (layers.fronts) loadFronts();
   if (layers.hotspots) loadHotspots();
   ['sst','subtemp'].forEach(w=>{ if(isoLayers[w]) loadIsotherms(w); });
 };
+
+/* ── 速報／預報時距切換 ──────────────────────────────────
+   D0 = 當日速報（JMA 分析場）；+1~+3 = 由分析場外推的預報場。       */
+function allEntries() {
+  if (!MANIFEST) return [];
+  const a = MANIFEST.dates.map(d => ({ date: d, lead: 0, kind: 'analysis' }));
+  const f = (MANIFEST.forecasts || []).map(x => ({ date: x.date, lead: x.lead, kind: 'forecast' }));
+  return a.concat(f);
+}
+function entryFor(date) { return allEntries().find(e => e.date === date) || null; }
+
+window.selectLead = async function(lead) {
+  const base = MANIFEST && MANIFEST.baseDate;
+  if (!base) return;
+  const target = lead === 0 ? base
+    : (MANIFEST.forecasts.find(f => f.lead === lead) || {}).date;
+  if (!target) return;
+  const sel = document.getElementById('date-select');
+  if (!Array.from(sel.options).some(o => o.value === target)) {
+    sel.insertAdjacentHTML('beforeend', `<option value="${target}">${target}</option>`);
+  }
+  sel.value = target;
+  await onDateChange();
+};
+
+function syncLeadButtons() {
+  const cur = currentDate();
+  const e = entryFor(cur);
+  document.querySelectorAll('.lead-btn').forEach(b => {
+    b.classList.toggle('active', e && String(e.lead) === b.dataset.lead);
+  });
+  const banner = document.getElementById('forecast-banner');
+  if (!banner) return;
+  if (e && e.kind === 'forecast') {
+    const m = (MANIFEST && MANIFEST.forecastMethod) || {};
+    const v = MANIFEST && MANIFEST.verification && MANIFEST.verification.leads
+      && MANIFEST.verification.leads[String(e.lead)];
+    banner.className = 'forecast-banner show';
+    banner.innerHTML =
+      `<strong>＋${e.lead} 日預報場</strong>（基準日 ${curData && curData.baseDate || MANIFEST.baseDate}）` +
+      `<span class="fb-sep">·</span>${m.formula || ''}` +
+      (v ? `<span class="fb-sep">·</span>回溯 RMSE ${v.rmse_c}°C，較持續性法 ${v.skill_vs_persistence_pct >= 0 ? '改進' : '劣化'} ${Math.abs(v.skill_vs_persistence_pct)}%` : '') +
+      `<span class="fb-sep">·</span><em>非 JMA 官方預報</em>`;
+  } else {
+    banner.className = 'forecast-banner';
+    banner.innerHTML = '';
+  }
+}
+
+/* 次表層／海流產品東界：以東 HSI 自動降階為 SST 單因子，畫線標示。 */
+let subBoundaryLayer = null;
+function drawSubBoundary(show) {
+  if (subBoundaryLayer) { map.removeLayer(subBoundaryLayer); subBoundaryLayer = null; }
+  if (!show) return;
+  const g = L.layerGroup();
+  L.polyline([[VIEW.latS, SUB_EAST_LIMIT], [VIEW.latN, SUB_EAST_LIMIT]],
+    { color: '#ffb020', weight: 2, dashArray: '8 6', opacity: 0.95 })
+    .bindTooltip(`JMA 次表層／海流產品東界 ${SUB_EAST_LIMIT}°E<br>以東 HSI 降階為 SST 單因子`,
+                 { sticky: true }).addTo(g);
+  subBoundaryLayer = g.addTo(map);
+}
+window.toggleSubBoundary = function(on){ drawSubBoundary(on); };
 
 // ── 載入最新資料（重新讀取 manifest 並跳到最新日期）──────
 window.loadLatest = async function () {
@@ -444,12 +551,49 @@ window.loadLatest = async function () {
   if (btn) btn.disabled = false;
 };
 
-// ── 一鍵速預報 ───────────────────────────────────────────
+// ── 一鍵速預報（當日速報 + 往後三日預報序列）─────────────
 let lastForecast = null;
+
+function habitatArea(P){
+  if(!P) return 0;
+  const dlat=Math.abs((P.latN-P.latS)/(P.ny-1))*111;
+  const dlon=Math.abs((P.lonE-P.lonW)/(P.nx-1))*111*Math.cos((P.latN+P.latS)/2*D2R);
+  const cell=dlat*dlon; let a=0;
+  for(let i=0;i<P.data.length;i++) if(!isNaN(P.data[i])&&P.data[i]>HOTSPOT_PROB_THR) a+=cell;
+  return Math.round(a);
+}
+
+/* 對某一日期計算 HSI 與熱區，但不改動當前圖層（供預報序列彙整用）。 */
+async function analyseDate(date){
+  const saved = curData;
+  try {
+    await loadDate(date);
+    const P = computeHabitat();
+    const spots = P ? extractHotspots(P, HOTSPOT_PROB_THR) : [];
+    return { date, kind: curData.kind, lead: curData.lead,
+             spots, nSpots: spots.length, area: habitatArea(P),
+             modelLabel: P ? P.modelLabel : '無法計算',
+             top: spots.length ? spots[0] : null };
+  } finally {
+    curData = saved;
+  }
+}
+
 window.runForecast = async function() {
   showMask('速預報分析中，請稍候…');
   await new Promise(r=>setTimeout(r,30));
   try {
+    const base = (MANIFEST && MANIFEST.baseDate) || currentDate();
+    // 先跑序列彙整（D0 + 三日預報）
+    const seqDates = [base].concat((MANIFEST && MANIFEST.forecasts || []).map(f=>f.date));
+    const sequence = [];
+    for (const d of seqDates) {
+      try { sequence.push(await analyseDate(d)); }
+      catch(err){ console.warn('序列分析失敗', d, err); }
+    }
+
+    // 回到使用者目前檢視的日期並畫圖層
+    await loadDate(currentDate());
     setChk('sst',true);
     addImage('sst', renderScalar(curData.sst, 0, 32, '海面水溫 SST', '°C', overlayOpacity), overlayOpacity);
     const P = computeHabitat();
@@ -457,15 +601,45 @@ window.runForecast = async function() {
     if (P) { curData._prob=P; setChk('habitat',true); addImage('habitat', renderHabitat(P, overlayOpacity), overlayOpacity);
              spots = extractHotspots(P,HOTSPOT_PROB_THR); setChk('hotspots',true); drawHotspots(spots); renderHotspotList(spots); }
     setChk('fronts',true); document.getElementById('opt-fronts').classList.add('show'); loadFronts();
-    let area = 0;
-    if (P){ const dlat=Math.abs((P.latN-P.latS)/(P.ny-1))*111, dlon=Math.abs((P.lonE-P.lonW)/(P.nx-1))*111*Math.cos((P.latN+P.latS)/2*D2R), cell=dlat*dlon;
-      for (let i=0;i<P.data.length;i++) if(!isNaN(P.data[i])&&P.data[i]>HOTSPOT_PROB_THR) area+=cell; }
-    lastForecast = { date: currentDate(), spots, area: Math.round(area), ecdf: ECDF.summary,
-      modelLabel: P ? P.modelLabel : '無法計算' };
-    setStatus(`✓ ${currentDate()} 速預報完成：${spots.length} 個推薦漁場 · HSI > ${HOTSPOT_PROB_THR} 海域 ${Math.round(area).toLocaleString()} km²`, 'status-ok');
+    const area = habitatArea(P);
+
+    lastForecast = { date: currentDate(), kind: curData.kind, lead: curData.lead,
+      baseDate: base, spots, area, ecdf: ECDF.summary,
+      modelLabel: P ? P.modelLabel : '無法計算', sequence,
+      method: (MANIFEST && MANIFEST.forecastMethod) || {},
+      verification: (MANIFEST && MANIFEST.verification) || null,
+      benchmark: (MANIFEST && MANIFEST.benchmark) || null };
+
+    renderSequence(sequence);
+    setStatus(`✓ ${currentDate()} 速預報完成：${spots.length} 個推薦漁場 · HSI > ${HOTSPOT_PROB_THR} 海域 ${area.toLocaleString()} km²`, 'status-ok');
   } catch(e){ setStatus('速預報失敗：'+e,'status-idle'); console.error(e); }
   hideMask();
 };
+
+function renderSequence(seq){
+  const el=document.getElementById('sequence-content'); if(!el)return;
+  const panel=document.getElementById('sequence-panel');
+  if(!seq||!seq.length){ if(panel) panel.style.display='none'; return; }
+  if(panel) panel.style.display='';
+  let html='<table class="seq-table"><tr><th>日期</th><th>場別</th><th>熱區</th><th>面積 km²</th><th>首選熱區中心</th></tr>';
+  seq.forEach(s=>{
+    const tag = s.lead===0 ? '速報' : `＋${s.lead}日`;
+    const c = s.top ? `${s.top.center[0].toFixed(1)}°N<br>${s.top.center[1].toFixed(1)}°E` : '—';
+    html+=`<tr class="${s.lead===0?'seq-base':''}"><td>${s.date.slice(5)}</td><td>${tag}</td>`+
+          `<td>${s.nSpots}</td><td>${s.area.toLocaleString()}</td><td>${c}</td></tr>`;
+  });
+  html+='</table>';
+  // 首選熱區的位移
+  if(seq.length>1 && seq[0].top && seq[seq.length-1].top){
+    const a=seq[0].top.center, b=seq[seq.length-1].top.center;
+    const dy=(b[0]-a[0])*111, dx=(b[1]-a[1])*111*Math.cos((a[0]+b[0])/2*D2R);
+    const dist=Math.sqrt(dx*dx+dy*dy);
+    const brg=(Math.atan2(dx,dy)*180/Math.PI+360)%360;
+    html+=`<div class="seq-note">首選熱區 3 日位移約 ${dist.toFixed(0)} km，方位 ${brg.toFixed(0)}°。</div>`;
+  }
+  html+='<div class="method-note">預報場由 JMA 分析場外推，非 JMA 官方預報；時距越長不確定性越大。</div>';
+  el.innerHTML=html;
+}
 function setChk(n,on){ const c=document.querySelector(`.layer-chk[data-layer="${n}"]`); if(c) c.checked=on; }
 
 // ── 報告下載 ─────────────────────────────────────────────
@@ -474,13 +648,19 @@ window.downloadReport = function() {
   const d = lastForecast, e = d.ecdf||{};
   const rows = d.spots.map(s=>`<tr><td>${s.rank}</td><td>${s.center[0].toFixed(2)}°N, ${s.center[1].toFixed(2)}°E</td><td>${s.mean_prob.toFixed(2)}</td><td>${s.area_km2.toLocaleString()}</td><td>${s.mean_sst!=null?s.mean_sst:'—'}</td></tr>`).join('');
   const paramRows = Object.values(e.parameters||{}).map(p=>`<tr><td>${p.label}</td><td>${p.core[0]}–${p.core[1]} ${p.unit}</td><td>${p.probable[0]}–${p.probable[1]} ${p.unit}</td><td>${p.d_max_value} ${p.unit}</td></tr>`).join('');
+  const seqRows=(d.sequence||[]).map(s=>`<tr><td>${s.date}</td><td>${s.lead===0?'當日速報（分析場）':'＋'+s.lead+' 日預報（外推）'}</td><td>${s.nSpots}</td><td>${s.area.toLocaleString()}</td><td>${s.top?`${s.top.center[0].toFixed(2)}°N, ${s.top.center[1].toFixed(2)}°E`:'—'}</td></tr>`).join('');
+  const m=d.method||{}, v=d.verification, bm=d.benchmark;
+  const vRows=v&&v.leads?['1','2','3'].map(k=>{const x=v.leads[k];return x?`<tr><td>＋${k} 日</td><td>${x.rmse_c}</td><td>${x.rmse_persistence_c}</td><td>${x.skill_vs_persistence_pct>0?'+':''}${x.skill_vs_persistence_pct}%</td></tr>`:''}).join(''):'';
   const html = `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8"><title>秋刀魚漁場速預報報告 ${d.date}</title>
-<style>body{font-family:'Noto Sans TC',sans-serif;max-width:820px;margin:30px auto;color:#22303f;padding:0 20px}h1{color:#0d2a4a;border-bottom:3px solid #e07a1f;padding-bottom:8px}h2{color:#14395f;margin-top:24px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #d9e2ec;padding:8px 10px;text-align:center;font-size:14px}th{background:#14395f;color:#fff}tr:nth-child(even){background:#f5f9fc}.kpi{display:flex;gap:16px;margin:16px 0}.card{flex:1;background:#f0f4f8;border-radius:10px;padding:14px;text-align:center}.card b{display:block;font-size:24px;color:#e07a1f}.foot{margin-top:30px;color:#5b6b7c;font-size:12px;border-top:1px solid #d9e2ec;padding-top:10px}</style></head><body>
-<h1>🎯 秋刀魚漁場速預報報告</h1><p>資料日期：${d.date}｜農業部水產試驗所 漁海況研究小組</p>
+<style>body{font-family:'Noto Sans TC',sans-serif;max-width:860px;margin:30px auto;color:#22303f;padding:0 20px}h1{color:#0d2a4a;border-bottom:3px solid #e07a1f;padding-bottom:8px}h2{color:#14395f;margin-top:24px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #d9e2ec;padding:8px 10px;text-align:center;font-size:14px}th{background:#14395f;color:#fff}tr:nth-child(even){background:#f5f9fc}.kpi{display:flex;gap:16px;margin:16px 0}.card{flex:1;background:#f0f4f8;border-radius:10px;padding:14px;text-align:center}.card b{display:block;font-size:24px;color:#e07a1f}.foot{margin-top:30px;color:#5b6b7c;font-size:12px;border-top:1px solid #d9e2ec;padding-top:10px}.warn{background:#fff6e6;border-left:4px solid #e07a1f;padding:10px 14px;margin:14px 0;font-size:13px}</style></head><body>
+<h1>🎯 秋刀魚漁場速預報報告</h1><p>檢視日期：${d.date}（${d.kind==='forecast'?'＋'+d.lead+' 日預報場':'當日速報'}）｜基準日：${d.baseDate}｜農業部水產試驗所 漁海況研究小組</p>
 <div class="kpi"><div class="card"><b>${d.spots.length}</b>推薦漁場熱區</div><div class="card"><b>${d.area.toLocaleString()}</b>HSI > ${HOTSPOT_PROB_THR} 海域 (km²)</div></div><p>作業模型：${d.modelLabel}</p>
+<h2>速報與三日預報序列</h2><table><tr><th>日期</th><th>場別</th><th>熱區數</th><th>HSI &gt; ${HOTSPOT_PROB_THR} 面積 (km²)</th><th>首選熱區中心</th></tr>${seqRows||'<tr><td colspan=5>無</td></tr>'}</table>
+<div class="warn"><b>預報方法與限制</b>：JMA NEAR-GOOS 未發布任何公開海況預報產品，本系統的 ＋1~＋3 日場是由 JMA 分析場外推：<code>${m.formula||''}</code>（趨勢回溯 ${m.trendDays||'—'} 日、大尺度化 ${m.scaleDeg||'—'}°、收縮係數 α=${m.alpha||'—'}）。次表層水溫為持續場加收縮趨勢，表面海流為持續場。<b>此非 JMA 官方預報。</b>另：JMA 次表層／海流產品東界僅至 163.45°E，以東海域的 HSI 自動降階為 SST 單因子。</div>
+${vRows?`<h2>預報技巧回溯驗證</h2><table><tr><th>時距</th><th>RMSE (°C)</th><th>持續性法 RMSE (°C)</th><th>相對改進</th></tr>${vRows}</table><p style="font-size:13px;color:#5b6b7c">滾動驗證期間 ${v.period[0]} ~ ${v.period[1]}，${v.nBaseDates} 個起報日。${bm?`固定基準線（${bm.period[0]} ~ ${bm.period[1]}，${bm.method}）：+${bm.skill_pct['1']}% / +${bm.skill_pct['2']}% / +${bm.skill_pct['3']}%。`:''}</p>`:''}
 <h2>CPUE 加權 ECDF 環境窗</h2><table><tr><th>參數</th><th>核心 P25–P75</th><th>可能 P10–P90</th><th>最大 ECDF 差異位置</th></tr>${paramRows}</table>
-<h2>推薦漁場熱區</h2><table><tr><th>排名</th><th>中心座標</th><th>平均 HSI</th><th>面積 (km²)</th><th>平均SST</th></tr>${rows||'<tr><td colspan=5>無</td></tr>'}</table>
-<p class="foot">資料來源：日本氣象廳 JMA GOOS。HSI 為歷史正 CPUE 樣本導出的相對適合度，不是校準後的出現機率；僅供規劃航線與現場判讀，仍須併用氣象、法規與船上探測。</p></body></html>`;
+<h2>推薦漁場熱區（${d.date}）</h2><table><tr><th>排名</th><th>中心座標</th><th>平均 HSI</th><th>面積 (km²)</th><th>平均SST</th></tr>${rows||'<tr><td colspan=5>無</td></tr>'}</table>
+<p class="foot">資料來源：日本氣象廳 JMA NEAR-GOOS（HIMSST／NPR-4DVAR／MGDSST）。HSI 為歷史正 CPUE 樣本導出的相對適合度，不是校準後的出現機率；僅供規劃航線與現場判讀，仍須併用氣象、法規與船上探測。</p></body></html>`;
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([html],{type:'text/html;charset=utf-8'}));
   a.download=`秋刀魚速預報_${d.date}.html`; a.click();
 };
@@ -525,7 +705,9 @@ async function loadDate(date) {
     const r = await fetch(DATA+date+'.json'); gridCache[date] = await r.json();
   }
   const j = gridCache[date];
-  curData = { date, sst: decodeGrid(j.sst), subDate:j.subDate||null, curDate:j.curDate||null };
+  curData = { date, sst: decodeGrid(j.sst), subDate:j.subDate||null, curDate:j.curDate||null,
+              kind: j.kind || 'analysis', lead: j.lead || 0, baseDate: j.baseDate || null,
+              mgdFillFrac: j.mgdFillFrac || 0 };
   if (j.sub) { curData.sub = {}; for (const k in j.sub) curData.sub[k]=decodeGrid(j.sub[k]); }
   if (j.cur) { curData.cur = { u: decodeGrid(j.cur.u), v: decodeGrid(j.cur.v) }; }
   renderFreshness();
@@ -584,9 +766,46 @@ function fillEcdf() {
 }
 function renderFreshness(){
   const el=document.getElementById('data-freshness'); if(!el||!curData)return;
+  const ref = curData.kind==='forecast' ? (curData.baseDate||curData.date) : curData.date;
   const age=date=>date?Math.max(0,Math.floor((Date.now()-Date.parse(date+'T00:00:00Z'))/86400000)):null;
-  const entries=[['SST',curData.date,0],['100mT',curData.subDate,curData.subDate?dayLag(curData.date,curData.subDate):null],['海流',curData.curDate,curData.curDate?dayLag(curData.date,curData.curDate):null]];
-  el.innerHTML=entries.map(([name,date,lag])=>{const days=age(date), stale=days==null||days>MAX_SUBSURFACE_LAG_DAYS||lag==null||lag>MAX_SUBSURFACE_LAG_DAYS; return `<div class="fresh-row"><span>${name}</span><span class="fresh-badge ${stale?'stale':'fresh'}">${date||'缺資料'}${days?` · 距今 ${days} 日`:''}${lag?` · 較 SST 落後 ${lag} 日`:''}</span></div>`}).join('');
+  const entries=[
+    ['SST', ref, 0],
+    ['100mT', curData.subDate, curData.subDate?dayLag(ref,curData.subDate):null],
+    ['海流', curData.curDate, curData.curDate?dayLag(ref,curData.curDate):null]];
+  let html=entries.map(([name,date,lag])=>{
+    const days=age(date);
+    const stale=days==null||lag==null||lag>MAX_SUBSURFACE_LAG_DAYS;
+    return `<div class="fresh-row"><span>${name}</span><span class="fresh-badge ${stale?'stale':'fresh'}">${date||'缺資料'}${days?` · 距今 ${days} 日`:''}${lag?` · 較 SST 落後 ${lag} 日`:''}</span></div>`;
+  }).join('');
+  if (curData.kind==='forecast')
+    html+=`<div class="fresh-row"><span>場別</span><span class="fresh-badge forecast">＋${curData.lead} 日預報（外推自 ${curData.baseDate}）</span></div>`;
+  if (curData.mgdFillFrac)
+    html+=`<div class="fresh-row"><span>MGDSST 補值</span><span class="fresh-badge fresh">${(curData.mgdFillFrac*100).toFixed(2)}% 網格</span></div>`;
+  el.innerHTML=html;
+}
+
+// ── 預報技巧（回溯驗證）面板 ─────────────────────────────
+function renderVerification(){
+  const el=document.getElementById('verify-content'); if(!el||!MANIFEST)return;
+  const v=MANIFEST.verification, b=MANIFEST.benchmark;
+  if(!v&&!b){ el.innerHTML='<div class="method-note">尚無足夠資料計算預報技巧。</div>'; return; }
+  let html='';
+  if(v&&v.leads){
+    html+='<table class="verify-table"><tr><th>時距</th><th>RMSE</th><th>持續性法</th><th>改進</th></tr>';
+    ['1','2','3'].forEach(k=>{ const d=v.leads[k]; if(!d)return;
+      const good=d.skill_vs_persistence_pct>0;
+      html+=`<tr><td>＋${k} 日</td><td>${d.rmse_c}</td><td>${d.rmse_persistence_c}</td>`+
+            `<td class="${good?'skill-pos':'skill-neg'}">${good?'+':''}${d.skill_vs_persistence_pct}%</td></tr>`;});
+    html+='</table>';
+    html+=`<div class="verify-note">滾動驗證：${v.period[0]} ~ ${v.period[1]}，${v.nBaseDates} 個起報日，`+
+          `漁場區 ${v.region?`${v.region[0]}–${v.region[1]}°N, ${v.region[2]}–${v.region[3]}°E`:'全域'}。樣本少時數值會有起伏。</div>`;
+  }
+  if(b){
+    html+=`<div class="verify-bench"><b>固定基準線</b>（${b.period[0]} ~ ${b.period[1]}，${b.method}）：`+
+          `＋1/＋2/＋3 日相對持續性法改進 <b>+${b.skill_pct['1']}% / +${b.skill_pct['2']}% / +${b.skill_pct['3']}%</b>。</div>`;
+  }
+  html+='<div class="method-note">RMSE 單位 °C。「持續性法」＝直接沿用基準日分析場當預報，是短期海況預報的標準對照。</div>';
+  el.innerHTML=html;
 }
 function tick(){ document.getElementById('current-time').textContent=new Date().toLocaleString('zh-TW',{hour12:false}); }
 
@@ -594,15 +813,48 @@ async function init() {
   try {
     const cacheBust='?t='+Date.now();
     const man = await (await fetch(DATA+'manifest.json'+cacheBust,{cache:'no-store'})).json();
+    // 向下相容：舊版 manifest 沒有 baseDate / forecasts（GitHub Action 尚未跑完新版建置時）。
+    // 此時仍顯示分析場，只把預報相關的 UI 收起來，不讓整頁初始化失敗。
+    // 舊版 manifest 的 dates 是由新到舊，新版由舊到新；取最大值才不會選錯基準日。
+    if (!man.baseDate) man.baseDate = man.dates.slice().sort()[man.dates.length-1];
+    if (!Array.isArray(man.forecasts)) man.forecasts = [];
+    MANIFEST = man;
     VIEW = man.view;
+    if (man.subsurfaceEastLimit) SUB_EAST_LIMIT = man.subsurfaceEastLimit;
+    if (man.currentEastLimit) CUR_EAST_LIMIT = man.currentEastLimit;
+    if (!man.forecasts.length) {
+      const bar = document.querySelector('.lead-bar');
+      if (bar) bar.innerHTML = '<span class="lead-pending">預報場尚未產生（等待每日自動更新）</span>';
+    }
     map.fitBounds(viewBounds());
     ECDF = await (await fetch(DATA+'ecdf.json'+cacheBust,{cache:'no-store'})).json();
     fillEcdf();
+    renderVerification();
+    renderDomainNote();
+
+    // 日期下拉：分析日（新到舊）+ 預報日
     const sel = document.getElementById('date-select');
-    sel.innerHTML = man.dates.map(d=>`<option value="${d}">${d}</option>`).join('');
-    await loadDate(man.dates[0]);
+    const fcOpts = (man.forecasts||[]).slice().reverse()
+      .map(f=>`<option value="${f.date}">${f.date}　＋${f.lead} 日預報</option>`).join('');
+    sel.innerHTML = fcOpts + man.dates.slice().reverse()
+      .map(d=>`<option value="${d}">${d}${d===man.baseDate?'　當日速報':''}</option>`).join('');
+    sel.value = man.baseDate || man.dates[man.dates.length-1];
+
+    await loadDate(sel.value);
+    syncLeadButtons();
+    drawSubBoundary(true);
     loadImageLayer('sst');
   } catch(e){ setStatus('初始化失敗：'+e,'status-idle'); console.error(e); }
   setInterval(tick,1000); tick();
+}
+
+function renderDomainNote(){
+  const el=document.getElementById('domain-note'); if(!el||!MANIFEST)return;
+  const s=MANIFEST.sources||{};
+  el.innerHTML =
+    `<div class="dn-row"><b>SST</b> ${s.sst?s.sst.domain:''}　→ 全域可用至 180°E</div>`+
+    `<div class="dn-row"><b>100 m 水溫／海流</b> ${s.subsurface?s.subsurface.domain:''}</div>`+
+    `<div class="dn-row warn">JMA 無涵蓋 ${SUB_EAST_LIMIT}°E 以東的次表層或海流產品，`+
+    `該海域 HSI 自動降階為 SST 單因子；系統不以邊界值外推填補。</div>`;
 }
 init();

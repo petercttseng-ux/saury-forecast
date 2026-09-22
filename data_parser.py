@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Dict, Optional, Tuple, List
 import re
 import config
+import grid_io
 
 
 class HIMSSTParser:
@@ -26,67 +27,37 @@ class HIMSSTParser:
     
     def parse_file(self, filepath: Path) -> Optional[Dict]:
         """
-        解析HIMSST資料檔案
-        
+        解析HIMSST資料檔案（向量化）
+
         資料格式：
         - 601筆記錄：1筆header + 600筆data
         - Header: YYYYMMDD（年月日各4位數）
         - 每筆data：800個3位數值（0.1°C單位）
         - 由北向南、由西向東排列
         - 888=海冰, 999=陸地/無效值
-        
-        Returns:
-            {
-                'date': datetime,
-                'sst': numpy array (600x800),
-                'lats': numpy array,
-                'lons': numpy array
-            }
         """
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-            
-            if len(lines) < 601:
+            lines = grid_io.read_records(filepath, config.HIMSST_ROWS + 1)
+            if lines is None:
                 print(f"資料檔案行數不足: {filepath}")
                 return None
-            
-            # 解析header
-            header = lines[0].strip()
-            year = int(header[:4])
-            month = int(header[4:8])
-            day = int(header[8:12])
-            date = datetime(year, month, day)
-            
-            # 解析SST資料
-            sst = np.full((config.HIMSST_ROWS, config.HIMSST_COLS), np.nan)
-            
-            for i, line in enumerate(lines[1:config.HIMSST_ROWS + 1]):
-                line = line.strip()
-                if len(line) < config.HIMSST_COLS * 3:
-                    continue
-                    
-                for j in range(config.HIMSST_COLS):
-                    try:
-                        val_str = line[j*3:(j+1)*3]
-                        val = int(val_str)
-                        
-                        if val == config.HIMSST_MISSING_VALUE:
-                            sst[i, j] = np.nan  # 陸地/無效
-                        elif val == config.HIMSST_ICE_VALUE:
-                            sst[i, j] = -2.0  # 海冰標記為-2
-                        else:
-                            sst[i, j] = val * config.HIMSST_UNIT_FACTOR
-                    except:
-                        sst[i, j] = np.nan
-            
+
+            date = grid_io.parse_header_date(lines[0])
+            sst = grid_io.decode_fixed_width(
+                lines[1:config.HIMSST_ROWS + 1],
+                config.HIMSST_COLS, 3,
+                missing=config.HIMSST_MISSING_VALUE,
+                factor=config.HIMSST_UNIT_FACTOR,
+                special={config.HIMSST_ICE_VALUE: -2.0},
+            )
+
             return {
                 'date': date,
                 'sst': sst,
                 'lats': self.lats,
                 'lons': self.lons
             }
-            
+
         except Exception as e:
             print(f"解析HIMSST檔案失敗: {filepath}, 錯誤: {e}")
             return None
@@ -115,80 +86,36 @@ class NPRSUBTParser:
     
     def parse_file(self, filepath: Path) -> Optional[Dict]:
         """
-        解析NPRSUBT資料檔案
-        
-        資料格式：
-        - 1585筆記錄：1筆header + 4個396筆記錄區塊
-        - 深度：50m, 100m, 200m, 400m
+        解析NPRSUBT資料檔案（向量化）
+
+        - 1585筆記錄：1筆header + 4個396筆記錄區塊（50/100/200/400 m）
         - 每個區塊：第1行為深度資訊，後395行為資料
-        - 每筆data：550個4位數值（0.01°C單位）
-        - 由北向南、由西向東排列
-        - 9999=無效值
-        
-        Returns:
-            {
-                'date': datetime,
-                'temp_50m': numpy array,
-                'temp_100m': numpy array,
-                'temp_200m': numpy array,
-                'temp_400m': numpy array,
-                'lats': numpy array,
-                'lons': numpy array
-            }
+        - 每筆data：550個4位數值（0.01°C單位）；9999=無效值
         """
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-            
-            if len(lines) < 1585:
+            lines = grid_io.read_records(filepath, 1 + 4 * config.NPRSUBT_BLOCK_SIZE - 1)
+            if lines is None:
                 print(f"資料檔案行數不足: {filepath}")
                 return None
-            
-            # 解析header
-            header = lines[0].strip()
-            year = int(header[:4])
-            month = int(header[4:8])
-            day = int(header[8:12])
-            date = datetime(year, month, day)
-            
-            result = {
-                'date': date,
-                'lats': self.lats,
-                'lons': self.lons
-            }
-            
-            # 解析各深度的溫度資料
+
+            date = grid_io.parse_header_date(lines[0])
+            result = {'date': date, 'lats': self.lats, 'lons': self.lons}
+
             depth_names = ['temp_50m', 'temp_100m', 'temp_200m', 'temp_400m']
-            block_starts = [2, 398, 794, 1190]  # 各區塊起始行（0-indexed，跳過深度行）
-            
-            for depth_idx, (name, start) in enumerate(zip(depth_names, block_starts)):
-                temp = np.full((config.NPRSUBT_ROWS, config.NPRSUBT_COLS), np.nan)
-                
-                for i in range(config.NPRSUBT_ROWS):
-                    line_idx = start + i
-                    if line_idx >= len(lines):
-                        break
-                        
-                    line = lines[line_idx].strip()
-                    if len(line) < config.NPRSUBT_COLS * 4:
-                        continue
-                    
-                    for j in range(config.NPRSUBT_COLS):
-                        try:
-                            val_str = line[j*4:(j+1)*4]
-                            val = int(val_str)
-                            
-                            if val == config.NPRSUBT_MISSING_VALUE:
-                                temp[i, j] = np.nan
-                            else:
-                                temp[i, j] = val * config.NPRSUBT_UNIT_FACTOR
-                        except:
-                            temp[i, j] = np.nan
-                
-                result[name] = temp
-            
+            block_starts = [2, 398, 794, 1190]
+
+            for name, start in zip(depth_names, block_starts):
+                block = lines[start:start + config.NPRSUBT_ROWS]
+                if len(block) < config.NPRSUBT_ROWS:
+                    block = block + [''] * (config.NPRSUBT_ROWS - len(block))
+                result[name] = grid_io.decode_fixed_width(
+                    block, config.NPRSUBT_COLS, 4,
+                    missing=config.NPRSUBT_MISSING_VALUE,
+                    factor=config.NPRSUBT_UNIT_FACTOR,
+                )
+
             return result
-            
+
         except Exception as e:
             print(f"解析NPRSUBT檔案失敗: {filepath}, 錯誤: {e}")
             return None
@@ -217,90 +144,34 @@ class NPRSUBCParser:
     
     def parse_file(self, filepath: Path) -> Optional[Dict]:
         """
-        解析NPRSUBC資料檔案
-        
-        資料格式：
-        - 795筆記錄：1筆header + 2個397筆記錄區塊
-        - 第1區塊：東向分量（Eastward）
-        - 第2區塊：北向分量（Northward）
+        解析NPRSUBC資料檔案（向量化）
+
+        - 795筆記錄：1筆header + 2個397筆記錄區塊（東向/北向分量）
         - 每個區塊：第1行為方向資訊，後396行為資料
-        - 每筆data：551個4位數值（1 cm/sec單位）
-        - 9999=無效值
-        
-        Returns:
-            {
-                'date': datetime,
-                'u': numpy array (東向分量, m/s),
-                'v': numpy array (北向分量, m/s),
-                'speed': numpy array (流速, m/s),
-                'lats': numpy array,
-                'lons': numpy array
-            }
+        - 每筆data：551個4位數值（1 cm/s 單位）；9999=無效值
         """
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-            
-            if len(lines) < 795:
+            lines = grid_io.read_records(filepath, 1 + 2 * config.NPRSUBC_BLOCK_SIZE - 1)
+            if lines is None:
                 print(f"資料檔案行數不足: {filepath}")
                 return None
-            
-            # 解析header
-            header = lines[0].strip()
-            year = int(header[:4])
-            month = int(header[4:8])
-            day = int(header[8:12])
-            date = datetime(year, month, day)
-            
-            # 解析東向分量（u）- 區塊1，從第2行開始（index 1），跳過方向資訊行
-            u = np.full((config.NPRSUBC_ROWS, config.NPRSUBC_COLS), np.nan)
-            for i in range(config.NPRSUBC_ROWS):
-                line_idx = 2 + i  # 跳過header和方向資訊行
-                if line_idx >= len(lines):
-                    break
-                
-                line = lines[line_idx].strip()
-                if len(line) < config.NPRSUBC_COLS * 4:
-                    continue
-                
-                for j in range(config.NPRSUBC_COLS):
-                    try:
-                        val_str = line[j*4:(j+1)*4]
-                        val = int(val_str)
-                        
-                        if val == config.NPRSUBC_MISSING_VALUE:
-                            u[i, j] = np.nan
-                        else:
-                            u[i, j] = val * config.NPRSUBC_UNIT_FACTOR  # cm/s -> m/s
-                    except:
-                        u[i, j] = np.nan
-            
-            # 解析北向分量（v）- 區塊2，從第399行開始（index 398）
-            v = np.full((config.NPRSUBC_ROWS, config.NPRSUBC_COLS), np.nan)
-            for i in range(config.NPRSUBC_ROWS):
-                line_idx = 399 + i  # 跳過方向資訊行
-                if line_idx >= len(lines):
-                    break
-                
-                line = lines[line_idx].strip()
-                if len(line) < config.NPRSUBC_COLS * 4:
-                    continue
-                
-                for j in range(config.NPRSUBC_COLS):
-                    try:
-                        val_str = line[j*4:(j+1)*4]
-                        val = int(val_str)
-                        
-                        if val == config.NPRSUBC_MISSING_VALUE:
-                            v[i, j] = np.nan
-                        else:
-                            v[i, j] = val * config.NPRSUBC_UNIT_FACTOR
-                    except:
-                        v[i, j] = np.nan
-            
-            # 計算流速
-            speed = np.sqrt(u**2 + v**2)
-            
+
+            date = grid_io.parse_header_date(lines[0])
+
+            def block(start):
+                b = lines[start:start + config.NPRSUBC_ROWS]
+                if len(b) < config.NPRSUBC_ROWS:
+                    b = b + [''] * (config.NPRSUBC_ROWS - len(b))
+                return grid_io.decode_fixed_width(
+                    b, config.NPRSUBC_COLS, 4,
+                    missing=config.NPRSUBC_MISSING_VALUE,
+                    factor=config.NPRSUBC_UNIT_FACTOR,
+                )
+
+            u = block(2)     # Eastward_Component
+            v = block(399)   # Northward_Component
+            speed = np.sqrt(u ** 2 + v ** 2)
+
             return {
                 'date': date,
                 'u': u,
@@ -309,7 +180,7 @@ class NPRSUBCParser:
                 'lats': self.lats,
                 'lons': self.lons
             }
-            
+
         except Exception as e:
             print(f"解析NPRSUBC檔案失敗: {filepath}, 錯誤: {e}")
             return None
@@ -321,6 +192,62 @@ class NPRSUBCParser:
         if match:
             date_str = match.group(1)
             return datetime.strptime(date_str, '%Y%m%d')
+        return None
+
+
+
+class MGDSSTParser:
+    """MGDSST（全球每日海面水溫）資料解析器 — HIMSST 遲到或破洞時的備援來源"""
+
+    def __init__(self):
+        self.lats = np.linspace(config.MGDSST_LAT_START,
+                                config.MGDSST_LAT_END,
+                                config.MGDSST_ROWS)
+        self.lons = np.linspace(config.MGDSST_LON_START,
+                                config.MGDSST_LON_END,
+                                config.MGDSST_COLS)
+
+    def parse_file(self, filepath: Path) -> Optional[Dict]:
+        """
+        解析MGDSST資料檔案
+
+        - 721筆記錄：1筆header + 720筆data（由北向南）
+        - 每筆data：1440個3位數值（0.1°C單位）；888=海冰, 999=陸地/無效
+        """
+        try:
+            lines = grid_io.read_records(filepath, config.MGDSST_ROWS + 1)
+            if lines is None:
+                print(f"資料檔案行數不足: {filepath}")
+                return None
+
+            date = grid_io.parse_header_date(lines[0])
+            body = lines[1:config.MGDSST_ROWS + 1]
+
+            # 欄寬由實際列長推得，避免 JMA 日後調整位數時靜默解錯
+            width = max(3, len(body[0].rstrip()) // config.MGDSST_COLS)
+            sst = grid_io.decode_fixed_width(
+                body, config.MGDSST_COLS, width,
+                missing=config.MGDSST_MISSING_VALUE if width == 3 else 9999,
+                factor=config.MGDSST_UNIT_FACTOR,
+                special={config.MGDSST_ICE_VALUE: -2.0} if width == 3 else None,
+            )
+
+            return {
+                'date': date,
+                'sst': sst,
+                'lats': self.lats,
+                'lons': self.lons
+            }
+
+        except Exception as e:
+            print(f"解析MGDSST檔案失敗: {filepath}, 錯誤: {e}")
+            return None
+
+    @staticmethod
+    def extract_date_from_filename(filename: str) -> Optional[datetime]:
+        match = re.search(r'D(\d{8})', filename)
+        if match:
+            return datetime.strptime(match.group(1), '%Y%m%d')
         return None
 
 

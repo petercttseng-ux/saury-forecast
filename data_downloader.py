@@ -17,11 +17,37 @@ import config
 class JMADataDownloader:
     """JMA資料下載器 - 處理HIMSST、NPRSUBT、NPRSUBC三種資料的下載"""
     
-    def __init__(self):
+    def __init__(self, retries: int = 3):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
+        self.retries = max(1, retries)
+
+    # ── 連線輔助：重試 + 主站/備援站切換 ──────────────────────────
+    @staticmethod
+    def _mirror(url: str) -> str:
+        """把主站 URL 換成 ds.data.jma.go.jp 備援站。"""
+        return url.replace(config.JMA_BASE_URL, config.JMA_MIRROR_URL)
+
+    def _get(self, url: str, timeout: int = 60):
+        """帶重試與備援站的 GET；全部失敗時回傳 None。"""
+        import time as _time
+        last = None
+        for candidate in (url, self._mirror(url)):
+            for attempt in range(self.retries):
+                try:
+                    r = self.session.get(candidate, timeout=timeout)
+                    r.raise_for_status()
+                    return r
+                except Exception as e:      # noqa: BLE001 - 需回報最後一個錯誤
+                    last = e
+                    if attempt < self.retries - 1:
+                        _time.sleep(2 * (attempt + 1))
+            if candidate != url:
+                break
+        print(f"連線失敗（已試主站與備援站）: {url} -> {last}")
+        return None
     
     def parse_directory(self, url: str, file_pattern: str) -> List[Tuple[str, str]]:
         """
@@ -35,10 +61,11 @@ class JMADataDownloader:
             List of (filename, full_url) tuples, 按日期降序排列
         """
         try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
+            response = self._get(url, timeout=30)
+            if response is None:
+                return []
             soup = BeautifulSoup(response.text, 'html.parser')
-            
+
             files = []
             pattern = re.compile(file_pattern)
             
@@ -64,10 +91,11 @@ class JMADataDownloader:
             List of (year, month) tuples
         """
         try:
-            response = self.session.get(base_url, timeout=30)
-            response.raise_for_status()
+            response = self._get(base_url, timeout=30)
+            if response is None:
+                return []
             soup = BeautifulSoup(response.text, 'html.parser')
-            
+
             years = []
             for link in soup.find_all('a', href=True):
                 href = link.get('href', '').strip('/')
@@ -81,8 +109,9 @@ class JMADataDownloader:
             for year in years[:2]:  # 檢查最近兩年
                 year_url = f"{base_url}/{year}/"
                 try:
-                    response = self.session.get(year_url, timeout=30)
-                    response.raise_for_status()
+                    response = self._get(year_url, timeout=30)
+                    if response is None:
+                        continue
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
                     for link in soup.find_all('a', href=True):
@@ -147,9 +176,10 @@ class JMADataDownloader:
                     downloaded.append(local_path)
                     continue
                     
-                response = self.session.get(url, timeout=60)
-                response.raise_for_status()
-                
+                response = self._get(url, timeout=120)
+                if response is None:
+                    continue
+
                 with open(local_path, 'w', encoding='utf-8') as f:
                     f.write(response.text)
                 
@@ -211,9 +241,10 @@ class JMADataDownloader:
                     downloaded.append(local_path)
                     continue
                 
-                response = self.session.get(url, timeout=60)
-                response.raise_for_status()
-                
+                response = self._get(url, timeout=120)
+                if response is None:
+                    continue
+
                 # 解壓縮gz檔案
                 compressed = io.BytesIO(response.content)
                 with gzip.GzipFile(fileobj=compressed) as gz:
@@ -279,9 +310,10 @@ class JMADataDownloader:
                     downloaded.append(local_path)
                     continue
                 
-                response = self.session.get(url, timeout=60)
-                response.raise_for_status()
-                
+                response = self._get(url, timeout=120)
+                if response is None:
+                    continue
+
                 # 解壓縮gz檔案
                 compressed = io.BytesIO(response.content)
                 with gzip.GzipFile(fileobj=compressed) as gz:
@@ -301,8 +333,88 @@ class JMADataDownloader:
         
         return downloaded
     
-    def download_all(self, count: int = 10, 
-                     progress_callback=None) -> dict:
+
+    def download_mgdsst(self, count: int = 10,
+                        progress_callback=None) -> List[Path]:
+        """
+        下載MGDSST（全球每日海面水溫，0.25°）資料。
+
+        用途：HIMSST 遲到或雲隙破洞時的備援與補值來源；同時覆蓋 180°E 以東，
+        可供未來東擴使用。JMA 此產品的目錄層級曾有 /YYYY/ 與 /YYYY/MM/ 兩種，
+        因此兩種都嘗試。
+
+        Returns:
+            已下載的檔案路徑列表
+        """
+        downloaded: List[Path] = []
+        if progress_callback:
+            progress_callback(0, count, "正在搜尋MGDSST資料...")
+
+        pattern = r"mgd_sst_glb_D\d{8}\.txt(\.gz)?$"
+        collected: List[Tuple[str, str]] = []
+        current_year = datetime.now().year
+
+        # (a) 年目錄直放
+        for year in range(current_year, current_year - 2, -1):
+            if len(collected) >= count:
+                break
+            for f in self.parse_directory(f"{config.MGDSST_BASE_URL}/{year}", pattern):
+                if len(collected) < count:
+                    collected.append(f)
+
+        # (b) 年/月目錄
+        if len(collected) < count:
+            for year, month in self.get_available_years_months(config.MGDSST_BASE_URL):
+                if len(collected) >= count:
+                    break
+                dir_url = f"{config.MGDSST_BASE_URL}/{year}/{month}/"
+                for f in self.parse_directory(dir_url, pattern):
+                    if len(collected) < count:
+                        collected.append(f)
+
+        if not collected:
+            print("MGDSST：未找到任何檔案（備援來源，略過不影響主流程）")
+            if progress_callback:
+                progress_callback(count, count, "MGDSST 無可用檔案（略過）")
+            return downloaded
+
+        for i, (filename, url) in enumerate(collected[:count]):
+            if progress_callback:
+                progress_callback(i, count, f"下載 {filename}...")
+            try:
+                local_name = filename.replace('.gz', '')
+                local_path = config.MGDSST_DIR / local_name
+                if local_path.exists():
+                    downloaded.append(local_path)
+                    continue
+
+                response = self._get(url, timeout=180)
+                if response is None:
+                    continue
+
+                if filename.endswith('.gz'):
+                    with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as gz:
+                        text = gz.read().decode('utf-8', 'replace')
+                else:
+                    text = response.text
+
+                with open(local_path, 'w', encoding='utf-8') as f:
+                    f.write(text)
+
+                downloaded.append(local_path)
+                print(f"已下載: {local_name}")
+
+            except Exception as e:
+                print(f"下載失敗: {filename}, 錯誤: {e}")
+
+        if progress_callback:
+            progress_callback(count, count, "MGDSST下載完成")
+
+        return downloaded
+
+    def download_all(self, count: int = 10,
+                     progress_callback=None,
+                     with_mgdsst: bool = True) -> dict:
         """
         下載所有類型的資料
         
@@ -312,17 +424,26 @@ class JMADataDownloader:
         results = {
             'himsst': [],
             'nprsubt': [],
-            'nprsubc': []
+            'nprsubc': [],
+            'mgdsst': []
         }
-        
+
         def combined_callback(current, total, msg):
             if progress_callback:
                 progress_callback(current, total, msg)
-        
+
+        # 主資料來源：任一失敗都要讓呼叫端看得到（不吞錯）
         results['himsst'] = self.download_himsst(count, combined_callback)
         results['nprsubt'] = self.download_nprsubt(count, combined_callback)
         results['nprsubc'] = self.download_nprsubc(count, combined_callback)
-        
+
+        # 備援來源：失敗不影響主流程
+        if with_mgdsst:
+            try:
+                results['mgdsst'] = self.download_mgdsst(count, combined_callback)
+            except Exception as e:
+                print(f"MGDSST 備援下載失敗（略過）: {e}")
+
         return results
 
 
@@ -330,8 +451,10 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description='下載最新 JMA 秋刀魚漁海況資料')
-    parser.add_argument('--count', type=int, default=3,
-                        help='各產品下載的最新日數（預設 3）')
+    parser.add_argument('--count', type=int, default=config.DOWNLOAD_COUNT,
+                        help=f'各產品下載的最新日數（預設 {config.DOWNLOAD_COUNT}）')
+    parser.add_argument('--no-mgdsst', action='store_true',
+                        help='略過 MGDSST 備援來源')
     args = parser.parse_args()
 
     downloader = JMADataDownloader()
@@ -340,7 +463,8 @@ if __name__ == "__main__":
         print(f"[{current}/{total}] {msg}")
     
     results = downloader.download_all(count=max(1, args.count),
-                                      progress_callback=show_progress)
+                                      progress_callback=show_progress,
+                                      with_mgdsst=not args.no_mgdsst)
     
     print("\n下載結果:")
     for data_type, files in results.items():

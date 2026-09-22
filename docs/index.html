@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="./style.css?v=5.3" />
+  <link rel="stylesheet" href="./style.css?v=6.0" />
 </head>
 <body>
 <header class="site-header">
@@ -20,7 +20,7 @@
       </div>
     </div>
     <div class="header-meta">
-      <span class="meta-badge" style="background:rgba(255,255,255,.16);padding:5px 10px;border-radius:8px;font-size:12px">靜態版 · GitHub Pages</span>
+      <span class="meta-badge" style="background:rgba(255,255,255,.16);padding:5px 10px;border-radius:8px;font-size:12px">速報 + 三日預報 · 至 180°E</span>
       <span id="current-time" class="meta-time">—</span>
     </div>
   </div>
@@ -32,7 +32,7 @@
       <button id="btn-forecast" class="btn-forecast" onclick="runForecast()">
         <span class="fc-icon">🎯</span><span class="fc-text">一鍵秋刀魚漁場速預報</span>
       </button>
-      <div class="fc-hint">自動分析所選日期 · 標示高適合度漁場熱區</div>
+      <div class="fc-hint">自動分析當日速報與往後三日預報 · 標示高適合度漁場熱區</div>
     </section>
 
     <section class="panel panel-freshness">
@@ -41,9 +41,26 @@
     </section>
 
     <section class="panel">
-      <h3 class="panel-title"><span class="icon">📅</span> 資料日期</h3>
+      <h3 class="panel-title"><span class="icon">📅</span> 速報 / 三日預報</h3>
+      <div class="lead-bar" role="group" aria-label="預報時距">
+        <button class="lead-btn active" data-lead="0" onclick="selectLead(0)">當日速報</button>
+        <button class="lead-btn" data-lead="1" onclick="selectLead(1)">＋1 日</button>
+        <button class="lead-btn" data-lead="2" onclick="selectLead(2)">＋2 日</button>
+        <button class="lead-btn" data-lead="3" onclick="selectLead(3)">＋3 日</button>
+      </div>
+      <label class="mini-label" style="margin-top:10px">所有日期（含歷史分析場）</label>
       <select id="date-select" class="form-select" onchange="onDateChange()"></select>
       <button id="btn-latest" class="btn-latest" onclick="loadLatest()">⟳ 載入最新資料</button>
+    </section>
+
+    <section class="panel" id="sequence-panel" style="display:none">
+      <h3 class="panel-title"><span class="icon">📈</span> 速報 → 三日預報序列</h3>
+      <div id="sequence-content"></div>
+    </section>
+
+    <section class="panel">
+      <h3 class="panel-title"><span class="icon">🎯</span> 預報技巧（回溯驗證）</h3>
+      <div id="verify-content" class="verify-box">載入中…</div>
     </section>
 
     <section class="panel">
@@ -111,6 +128,11 @@
         <span class="layer-name">漁場熱區標記</span>
       </label>
 
+      <label class="layer-row">
+        <input type="checkbox" id="sub-boundary-chk" onchange="toggleSubBoundary(this.checked)" checked />
+        <span class="layer-name">次表層資料東界 163.45°E</span>
+      </label>
+
       <div class="opacity-row">
         <label class="mini-label">疊圖透明度</label>
         <input type="range" id="opacity" min="0.2" max="1" step="0.05" value="0.82" oninput="setOpacity(this.value)" />
@@ -138,12 +160,14 @@
       <div id="ecdf-chart-note" class="ecdf-chart-note" aria-live="polite"></div>
     </section>
 
-    <details class="panel panel-sources">
-      <summary class="panel-title"><span class="icon">🔎</span> 資料來源與判讀限制</summary>
-      <p><a href="https://www.data.jma.go.jp/goos/data/pub/JMA-product/him_sst_pac_D/" target="_blank" rel="noopener">JMA HIMSST 衛星／現場融合 SST</a></p>
-      <p><a href="https://www.data.jma.go.jp/goos/data/pub/JMA-product/npr_subt_jpn_D/" target="_blank" rel="noopener">JMA 100m 次表層水溫</a> · <a href="https://www.data.jma.go.jp/goos/data/pub/JMA-product/npr_subc_jpn_D/" target="_blank" rel="noopener">表面海流</a></p>
+    <details class="panel panel-sources" open>
+      <summary class="panel-title"><span class="icon">🔎</span> 資料來源與涵蓋範圍</summary>
+      <div id="domain-note" class="domain-note"></div>
+      <p><a href="https://www.data.jma.go.jp/goos/data/pub/JMA-product/him_sst_pac_D/" target="_blank" rel="noopener">JMA HIMSST 衛星／現場融合 SST</a>（0–60°N, 100–180°E）</p>
+      <p><a href="https://www.data.jma.go.jp/goos/data/pub/JMA-product/npr_subt_jpn_D/" target="_blank" rel="noopener">JMA 100m 次表層水溫</a> · <a href="https://www.data.jma.go.jp/goos/data/pub/JMA-product/npr_subc_jpn_D/" target="_blank" rel="noopener">表面海流</a>（～163.5°E）</p>
+      <p><a href="https://www.data.jma.go.jp/goos/data/pub/JMA-product/mgd_sst_glb_D/" target="_blank" rel="noopener">JMA MGDSST 全球 SST</a>（備援補值，0.25°）</p>
       <p><a href="https://academic.oup.com/icesjms/article/70/5/991/643838" target="_blank" rel="noopener">秋刀魚 ECDF 研究方法</a></p>
-      <p class="method-note">本圖是相對環境適合度，不代表捕獲保證；正 CPUE 樣本缺少未捕獲／未作業海域，須併用船上魚探、天氣與漁業法規。</p>
+      <p class="method-note">本圖是相對環境適合度，不代表捕獲保證；正 CPUE 樣本缺少未捕獲／未作業海域，須併用船上魚探、天氣與漁業法規。＋1~＋3 日為分析場外推，非 JMA 官方預報。</p>
     </details>
   </aside>
 
@@ -152,6 +176,7 @@
       <span id="status-text" class="status-idle">拖曳地圖平移 · 滾輪縮放 · 移動滑鼠即時顯示水溫</span>
       <div id="live-value" class="live-value"></div>
     </div>
+    <div id="forecast-banner" class="forecast-banner"></div>
     <div id="map"></div>
     <div id="legend-box" class="legend-box"></div>
     <div id="overlay-mask" class="overlay-mask hidden">
@@ -164,15 +189,15 @@
 <footer class="site-footer">
   <span>© 農業部水產試驗所 漁海況研究小組</span>
   <span class="footer-sep">|</span>
-  <span>資料來源：JMA GOOS 衛星／同化海況</span>
+  <span>資料來源：JMA NEAR-GOOS（HIMSST／NPR-4DVAR／MGDSST）</span>
   <span class="footer-sep">|</span>
-  <span>範圍 17°N–56°N, 114°E–162°E</span>
+  <span>範圍 17°N–56°N, 114°E–180°E</span>
   <span class="footer-sep">|</span>
-  <span>v5.3 HSI 0.1 分級 · 推薦門檻 &gt; 0.5</span>
+  <span>v6.0 當日速報 + 三日預報 · HSI 0.1 分級 · 推薦門檻 &gt; 0.5</span>
 </footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
-<script src="./app.js?v=5.3.1"></script>
+<script src="./app.js?v=6.0.0"></script>
 </body>
 </html>

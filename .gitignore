@@ -12,6 +12,7 @@ venv/
 data/himsst/*.txt
 data/nprsubt/*.txt
 data/nprsubc/*.txt
+data/mgdsst/*.txt
 
 # 大型示範圖／測試圖
 demo_*.png
